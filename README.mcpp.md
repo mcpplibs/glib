@@ -5,15 +5,16 @@ this fork adds under `mcpp/`.
 
 ```toml
 [dependencies]
-gnome.glib    = "2.82.5"   # data structures, main loop, Unicode, GVariant, GRegex
 gnome.gobject = "2.82.5"   # GType, signals, properties, GValue
 gnome.gmodule = "2.82.5"   # dynamic module loading
+# gnome.glib arrives transitively — do NOT name it; see below
 ```
 
 ```cpp
-extern "C" {
+// No extern "C": glib decorates its own headers with G_BEGIN_DECLS, and
+// wrapping them breaks under libc++ (glib.h pulls <stdlib.h>, which libc++
+// routes through <cstdlib> — templates inside an extern "C" block).
 #include <glib-object.h>
-}
 ```
 
 ## Why a fork
