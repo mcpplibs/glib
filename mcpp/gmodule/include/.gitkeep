@@ -1,0 +1,7 @@
+# Written by this member's build.mcpp on every build. Nothing here is checked
+# in.
+#
+# THIS FILE EXISTS SO THE DIRECTORY DOES. mcpp builds the compiler command line
+# from `include_dirs` BEFORE running the build program, and silently drops an
+# entry that does not exist yet — a fresh extraction would then compile against
+# some dependency's config.h instead of this one's.

@@ -32,7 +32,7 @@ include_dirs = [
     # not exist when mcpp builds the command line is silently dropped, and only
     # `include/` itself is committed. A fresh extraction failed with
     # `gmoduleconf.h: No such file or directory` while every warm tree passed.
-    "../include",
+    "include",
     "../../upstream",
     "../../upstream/glib",
     "../../upstream/gmodule",

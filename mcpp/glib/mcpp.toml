@@ -176,7 +176,7 @@ sources = [
 
 include_dirs = [
     # FIRST, deliberately — see the note above about `config.h`.
-    "../include",
+    "include",
     "../../upstream",
     "../../upstream/glib",
 ]

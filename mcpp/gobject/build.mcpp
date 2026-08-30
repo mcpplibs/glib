@@ -1,6 +1,7 @@
-// gnome.glib — the base library.
+// gnome.gobject — the type system.
 //
-// Generates the four outputs every member needs and nothing else; see
+// Generates the four shared outputs plus gobject-visibility.h and the
+// glib-enumtypes pair, which are THIS member's and are compiled by it. See
 // ../common/generators.h for why each member generates its own copy.
 #include <algorithm>
 #include <cctype>
@@ -20,12 +21,17 @@ import mcpp;
 int main()
 {
     if (std::string(mcpp::target_os()) != "linux") {
-        note("this package builds glib for Linux only: the generated glibconfig.h\n"
+        note("this package builds gobject for Linux only: the generated glibconfig.h\n"
              "fixes G_OS_UNIX, the POSIX thread implementation and the POLL\n"
              "constants, none of which is right anywhere else.\n");
         return 1;
     }
     mcpp_glib_common_setup();
+    // gobject's own: the visibility macros for its namespace, and the enum
+    // types generated from glib/gunicode.h — compiled by THIS member because
+    // g_enum_register_static is a gobject symbol.
+    gen_visibility("GOBJECT", g_inc / "gobject" / "gobject-visibility.h");
+    gen_enumtypes();
     mcpp::rerun_if_changed("build.mcpp");
     return 0;
 }

@@ -1,6 +1,7 @@
-// gnome.glib — the base library.
+// gnome.gmodule — dynamic module loading.
 //
-// Generates the four outputs every member needs and nothing else; see
+// Generates the four shared outputs plus gmodule-visibility.h and
+// gmoduleconf.h, which are THIS member's. See
 // ../common/generators.h for why each member generates its own copy.
 #include <algorithm>
 #include <cctype>
@@ -20,12 +21,17 @@ import mcpp;
 int main()
 {
     if (std::string(mcpp::target_os()) != "linux") {
-        note("this package builds glib for Linux only: the generated glibconfig.h\n"
+        note("this package builds gmodule for Linux only: the generated glibconfig.h\n"
              "fixes G_OS_UNIX, the POSIX thread implementation and the POLL\n"
              "constants, none of which is right anywhere else.\n");
         return 1;
     }
     mcpp_glib_common_setup();
+    // gmodule's own: the visibility macros for its namespace, and the loader
+    // selection. gmoduleconf.h is written FLAT because gmodule.c includes it by
+    // bare name and a subdirectory entry that does not exist yet is dropped.
+    gen_visibility("GMODULE", g_inc / "gmodule" / "gmodule-visibility.h");
+    gen_gmoduleconf();
     mcpp::rerun_if_changed("build.mcpp");
     return 0;
 }
