@@ -79,62 +79,100 @@ jobs:
 
       # Not "did it build" — what the generators actually wrote. Each of these
       # would compile and link if it were wrong.
+      # Not "did it build" — what the generators actually wrote. Each of these
+      # would compile and link if it were wrong.
+      #
+      # ⚠️ EACH MEMBER HAS ITS OWN include/. That is the fix for a silent
+      # failure (see mcpp/common/generators.h), and it means the four shared
+      # outputs are checked in every member's tree rather than in one place —
+      # which is also how a divergence between them would be caught.
       - name: the generated headers say what they should
         run: |
           cd mcpp
-          echo "--- generated ---"
-          find include -type f | sort
+          for m in glib gobject gmodule; do
+            echo "--- $m/include ---"
+            find "$m/include" -type f | sort
 
-          # glibconfig.h: the public type model.
-          grep -qx '#define GLIB_SIZEOF_VOID_P 8' include/glibconfig.h \
-            || { echo "::error::glibconfig.h does not describe an LP64 target"; exit 1; }
-          grep -qx '#define G_BYTE_ORDER G_LITTLE_ENDIAN' include/glibconfig.h \
-            || { echo "::error::glibconfig.h byte order is wrong for this runner"; exit 1; }
-          # G_GNUC_INTERNAL lives in glibconfig.h, not gmacros.h. Omitting it is
-          # how gmodule-deprecated.c failed with `unknown type name`.
-          grep -q 'G_GNUC_INTERNAL' include/glibconfig.h \
-            || { echo "::error::glibconfig.h is missing G_GNUC_INTERNAL"; exit 1; }
+            # glibconfig.h: the public type model. Every member needs it.
+            grep -qx '#define GLIB_SIZEOF_VOID_P 8' "$m/include/glibconfig.h" \
+              || { echo "::error::$m: glibconfig.h does not describe an LP64 target"; exit 1; }
+            grep -qx '#define G_BYTE_ORDER G_LITTLE_ENDIAN' "$m/include/glibconfig.h" \
+              || { echo "::error::$m: glibconfig.h byte order is wrong for this runner"; exit 1; }
+            # G_GNUC_INTERNAL lives in glibconfig.h, not gmacros.h. Omitting it is
+            # how gmodule-deprecated.c failed with `unknown type name`.
+            grep -q 'G_GNUC_INTERNAL' "$m/include/glibconfig.h" \
+              || { echo "::error::$m: glibconfig.h is missing G_GNUC_INTERNAL"; exit 1; }
 
-          # gversionmacros.h: one block per even minor up to the current one.
-          n=$(grep -c '^#define GLIB_VERSION_2_' include/glib/gversionmacros.h)
-          echo "GLIB_VERSION_2_x macros: $n"
-          [ "$n" -ge 41 ] || { echo "::error::only $n version macros; expected one per even minor to 2.82"; exit 1; }
-          grep -q 'GLIB_VERSION_2_82' include/glib/gversionmacros.h \
-            || { echo "::error::gversionmacros.h stops before the current version"; exit 1; }
+            # gversionmacros.h: one block per even minor up to the current one.
+            n=$(grep -c '^#define GLIB_VERSION_2_' "$m/include/glib/gversionmacros.h")
+            [ "$n" -ge 41 ] || { echo "::error::$m: only $n version macros"; exit 1; }
+            grep -q 'GLIB_VERSION_2_82' "$m/include/glib/gversionmacros.h" \
+              || { echo "::error::$m: gversionmacros.h stops before the current version"; exit 1; }
 
+            # config.h: two macros with almost the same name, and only one of
+            # them selects anything.
+            grep -qx '#define USE_SYSTEM_PRINTF 1' "$m/include/config.h" \
+              || { echo "::error::$m: config.h would select glib's bundled gnulib printf"; exit 1; }
+            # ⚠️ `^#define`, not a bare grep: config.h EXPLAINS in a comment why
+            # these are absent, and a loose match would find the explanation.
+            for u in HAVE_ISSETUGID HAVE_LCHMOD HAVE_GETFSSTAT HAVE_SYSCTLBYNAME HAVE_XLOCALE_H; do
+              grep -qE "^#define +$u" "$m/include/config.h" \
+                && { echo "::error::$m: $u is DEFINED; it is #ifdef-tested and must be absent"; exit 1; }
+            done
+          done
+
+          # ── the two that belong to ONE member each ────────────────────────
           # glib-enumtypes: the mkenums reimplementation. Four enums, and the
           # count is asserted because a silent drop produces a library missing
           # g_unicode_script_get_type and the failure lands in a consumer.
-          t=$(grep -c '_get_type (void)' include/gobject/glib-enumtypes.h)
+          t=$(grep -c '_get_type (void)' gobject/include/gobject/glib-enumtypes.h)
           echo "generated enum types: $t"
           [ "$t" -eq 4 ] || { echo "::error::$t enum types, expected 4"; exit 1; }
-          grep -q 'g_unicode_script_get_type' include/gobject/glib-enumtypes.h \
+          grep -q 'g_unicode_script_get_type' gobject/include/gobject/glib-enumtypes.h \
             || { echo "::error::GUnicodeScript did not survive mkenums"; exit 1; }
           # The nick is the fiddly half of the generator: prefix stripped, lower
           # cased, underscores to hyphens.
-          grep -q '"han"' include/gobject/glib-enumtypes.c \
+          grep -q '"han"' gobject/include/gobject/glib-enumtypes.c \
             || { echo "::error::the enum nicks are not what mkenums derives"; exit 1; }
 
-          # config.h: two macros with almost the same name, and only one of
-          # them selects anything.
-          grep -qx '#define USE_SYSTEM_PRINTF 1' include/config.h \
-            || { echo "::error::config.h would select glib's bundled gnulib printf"; exit 1; }
-          # ⚠️ `^#define`, not a bare grep: config.h EXPLAINS in a comment why
-          # this macro and eight others are absent, and a loose match would
-          # find the explanation and fail on it.
-          grep -qE '^#define +HAVE_ISSETUGID' include/config.h \
-            && { echo "::error::HAVE_ISSETUGID is DEFINED; it is #ifdef-tested, so any value at all says glibc has it"; exit 1; }
-          for m in HAVE_LCHMOD HAVE_GETFSSTAT HAVE_SYSCTLBYNAME HAVE_XLOCALE_H; do
-            grep -qE "^#define +$m" include/config.h \
-              && { echo "::error::$m is DEFINED; it is #ifdef-tested and must be absent"; exit 1; }
-          done
-          echo "the nine #ifdef-tested negatives are absent, not 0"
-
-          # gmoduleconf.h: the loader selection.
-          grep -q 'G_MODULE_IMPL_DL' include/gmoduleconf.h \
+          # gmoduleconf.h: the loader selection. FLAT, because gmodule.c
+          # includes it by bare name and a subdirectory include_dirs entry that
+          # does not exist yet is silently dropped.
+          grep -q 'G_MODULE_IMPL_DL' gmodule/include/gmoduleconf.h \
             || { echo "::error::gmoduleconf.h did not select the dl loader"; exit 1; }
 
-          echo "all generated headers check out"
+          echo "all generated headers check out, in all three trees"
+
+      # A consumer naming BOTH gobject and gmodule is the case that caught the
+      # cross-package source reference: each alone worked, the pair did not.
+      - name: a consumer naming gobject AND gmodule links
+        run: |
+          d=$(mktemp -d); mkdir -p "$d/src"
+          cat > "$d/mcpp.toml" <<TOML
+          [package]
+          name = "pair"
+          version = "0.1.0"
+          standard = "c++23"
+          [target.'cfg(linux)'.dependencies.gnome]
+          gobject = { path = "$PWD/mcpp/gobject" }
+          gmodule = { path = "$PWD/mcpp/gmodule" }
+          [targets.pair]
+          kind = "bin"
+          main = "src/main.cpp"
+          TOML
+          cat > "$d/src/main.cpp" <<'CPP'
+          #include <glib-object.h>
+          #include <gmodule.h>
+          #include <gobject/glib-enumtypes.h>
+          #include <cstdio>
+          int main() {
+              const GType t = g_unicode_script_get_type();
+              std::printf("GUnicodeScript=%lu gmodule=%d\n",
+                          (unsigned long)t, g_module_supported());
+              return (t != 0 && g_module_supported()) ? 0 : 1;
+          }
+          CPP
+          cd "$d" && mcpp run
 
   upstream:
     runs-on: ubuntu-latest
