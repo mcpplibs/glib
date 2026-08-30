@@ -131,7 +131,7 @@ jobs:
           echo "the nine #ifdef-tested negatives are absent, not 0"
 
           # gmoduleconf.h: the loader selection.
-          grep -q 'G_MODULE_IMPL_DL' include/gmodule/gmoduleconf.h \
+          grep -q 'G_MODULE_IMPL_DL' include/gmoduleconf.h \
             || { echo "::error::gmoduleconf.h did not select the dl loader"; exit 1; }
 
           echo "all generated headers check out"

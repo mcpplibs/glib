@@ -26,12 +26,12 @@ sources = [
 ]
 
 include_dirs = [
-    # `../include/gmodule` FIRST because gmodule.c writes
-    # `#include "gmoduleconf.h"` by bare name — upstream generates it into the
-    # gmodule build directory, so it is not under a `gmodule/` prefix there.
-    # The generator here keeps the per-library subdirectory, so the subdirectory
-    # has to be on the path as well.
-    "../include/gmodule",
+    # `../include` and nothing below it. gmodule.c includes `gmoduleconf.h` by
+    # bare name, so the generator writes it FLAT here rather than under a
+    # `gmodule/` prefix: an `include_dirs` entry naming a directory that does
+    # not exist when mcpp builds the command line is silently dropped, and only
+    # `include/` itself is committed. A fresh extraction failed with
+    # `gmoduleconf.h: No such file or directory` while every warm tree passed.
     "../include",
     "../../upstream",
     "../../upstream/glib",
