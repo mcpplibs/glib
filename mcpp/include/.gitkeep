@@ -1,0 +1,9 @@
+# Written by mcpp/glib/build.mcpp on every build: glibconfig.h, config.h,
+# glib/gversionmacros.h, the three *-visibility.h headers and
+# gobject/glib-enumtypes.{h,c}. Nothing in here is checked in.
+#
+# THIS FILE EXISTS SO THE DIRECTORY DOES. mcpp builds the compiler command line
+# from `include_dirs` BEFORE running the build program, and silently drops an
+# entry that does not exist yet — so on the first build of a fresh clone the
+# generated config.h would be written correctly and then ignored, with glib's
+# sources reading some dependency's config.h instead.

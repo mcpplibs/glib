@@ -1,0 +1,834 @@
+// glib — the five generators meson runs, as one C++ program.
+//
+//   tools/gen-visibility-macros.py  versions-macros   → glib/gversionmacros.h
+//   tools/gen-visibility-macros.py  visibility-macros → glib/glib-visibility.h
+//                                                     → gobject/gobject-visibility.h
+//                                                     → gmodule/gmodule-visibility.h
+//   meson configure_file            glibconfig.h.in   → glibconfig.h
+//   gobject/glib-mkenums (Python)                     → glib-enumtypes.{h,c}
+//   meson configure_file                              → config.h
+//
+// All five are pure text transformations over inputs that are in the tree, so
+// none of them needs an interpreter. `build.mcpp` is compiled and run by mcpp.
+//
+// ⚠️ EVERYTHING GOES INTO <manifest>/include, NOT out_dir().
+//
+// glib's own sources say `#include "config.h"` and `#include <glibconfig.h>`,
+// and `config.h` is the most contested file name in C — the wlroots fork
+// measured SIX of them on one include path. A build program's
+// `mcpp::include_dir()` is appended AFTER every dependency's, so a generated
+// config.h placed there loses to any dependency that ships one. The manifest's
+// `include_dirs` come first, so the generated tree is named there and written
+// here, exactly as `src/*.cppm` is.
+
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+import mcpp;
+
+namespace fs = std::filesystem;
+
+namespace {
+
+// glib 2.82.5. The minor version drives the version and visibility macro
+// generators, which emit one block per stable minor release.
+constexpr int MAJOR = 2, MINOR = 82, MICRO = 5;
+
+fs::path g_root, g_up, g_inc;
+
+// ⚠️ Flush stdout before writing to stderr. build.mcpp's stdout IS the
+// directive protocol and mcpp reads both streams through one pipe; an
+// unflushed directive and an eager stderr line splice into each other and the
+// result is reported as a malformed directive. Learned in the wlroots fork,
+// where 39 actions was enough output to cross the buffer boundary.
+template <class... A>
+void note(const char *fmt, A... a)
+{
+    std::fflush(stdout);
+    std::fprintf(stderr, fmt, a...);
+    std::fflush(stderr);
+}
+
+std::string slurp(const fs::path &p)
+{
+    std::ifstream in(p);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+}
+
+// ── tools/gen-visibility-macros.py, versions-macros ─────────────────────────
+//
+// Expands @GLIB_VERSIONS@ in gversionmacros.h.in into one GLIB_VERSION_2_n
+// block per even minor from 2 up to and including the current one.
+void gen_version_macros()
+{
+    const fs::path in = g_up / "glib" / "gversionmacros.h.in";
+    std::string body = slurp(in);
+    const std::string marker = "@GLIB_VERSIONS@";
+    const std::size_t at = body.find(marker);
+    if (at == std::string::npos) {
+        note("gversionmacros.h.in no longer contains @GLIB_VERSIONS@\n");
+        std::exit(1);
+    }
+    // The whole LINE holding the marker is replaced, as the generator does by
+    // writing its own lines in place of that one.
+    std::size_t ls = body.rfind('\n', at);
+    ls = (ls == std::string::npos) ? 0 : ls + 1;
+    std::size_t le = body.find('\n', at);
+    le = (le == std::string::npos) ? body.size() : le + 1;
+
+    std::ostringstream v;
+    for (int m = 2; m <= MINOR + 1; m += 2) {
+        // `Since:` is max(minor, 32) — the versioning macros themselves only
+        // arrived in 2.32, so the older ones are documented as of that release.
+        const int since = m > 32 ? m : 32;
+        v << "/**\n"
+             "* GLIB_VERSION_2_" << m << ":\n"
+             "*\n"
+             "* A macro that evaluates to the 2." << m << " version of GLib, in a format\n"
+             "* that can be used by the C pre-processor.\n"
+             "*\n"
+             "* Since: 2." << since << "\n"
+             "*/\n"
+             "#define GLIB_VERSION_2_" << m << "       (G_ENCODE_VERSION (2, " << m << "))\n";
+    }
+
+    fs::create_directories(g_inc / "glib");
+    std::ofstream o(g_inc / "glib" / "gversionmacros.h");
+    o << body.substr(0, ls) << v.str() << body.substr(le);
+    mcpp::rerun_if_changed(in.string().c_str());
+}
+
+// ── tools/gen-visibility-macros.py, visibility-macros ───────────────────────
+//
+// One header per library, differing only in the namespace token. Reproduced
+// exactly: the availability macros are what every glib header uses to decorate
+// its declarations, so a difference here is a difference in every symbol's
+// visibility and deprecation behaviour.
+void gen_visibility(const char *ns, const fs::path &out)
+{
+    fs::create_directories(out.parent_path());
+    std::ofstream f(out);
+    const std::string n = ns;
+    f << "#pragma once\n"
+         "\n/* GENERATED by build.mcpp, replacing tools/gen-visibility-macros.py. */\n\n"
+      << "#if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(" << n << "_STATIC_COMPILATION)\n"
+         "#  define _" << n << "_EXPORT __declspec(dllexport)\n"
+         "#  define _" << n << "_IMPORT __declspec(dllimport)\n"
+         "#elif __GNUC__ >= 4\n"
+         "#  define _" << n << "_EXPORT __attribute__((visibility(\"default\")))\n"
+         "#  define _" << n << "_IMPORT\n"
+         "#else\n"
+         "#  define _" << n << "_EXPORT\n"
+         "#  define _" << n << "_IMPORT\n"
+         "#endif\n"
+         "#ifdef " << n << "_COMPILATION\n"
+         "#  define _" << n << "_API _" << n << "_EXPORT\n"
+         "#else\n"
+         "#  define _" << n << "_API _" << n << "_IMPORT\n"
+         "#endif\n\n"
+         "#define _" << n << "_EXTERN _" << n << "_API extern\n\n"
+         "#define " << n << "_VAR _" << n << "_EXTERN\n"
+         "#define " << n << "_AVAILABLE_IN_ALL _" << n << "_EXTERN\n\n"
+         "#ifdef GLIB_DISABLE_DEPRECATION_WARNINGS\n"
+         "#define " << n << "_DEPRECATED _" << n << "_EXTERN\n"
+         "#define " << n << "_DEPRECATED_FOR(f) _" << n << "_EXTERN\n"
+         "#define " << n << "_UNAVAILABLE(maj,min) _" << n << "_EXTERN\n"
+         "#define " << n << "_UNAVAILABLE_STATIC_INLINE(maj,min)\n"
+         "#else\n"
+         "#define " << n << "_DEPRECATED G_DEPRECATED _" << n << "_EXTERN\n"
+         "#define " << n << "_DEPRECATED_FOR(f) G_DEPRECATED_FOR(f) _" << n << "_EXTERN\n"
+         "#define " << n << "_UNAVAILABLE(maj,min) G_UNAVAILABLE(maj,min) _" << n << "_EXTERN\n"
+         "#define " << n << "_UNAVAILABLE_STATIC_INLINE(maj,min) G_UNAVAILABLE(maj,min)\n"
+         "#endif\n";
+
+    // The generator starts at 26, not 2: nothing older than 2.26 is decorated.
+    for (int m = 26; m <= MINOR + 1; m += 2) {
+        const std::string M = std::to_string(m);
+        f << "\n"
+             "#if GLIB_VERSION_MIN_REQUIRED >= GLIB_VERSION_2_" << M << "\n"
+             "#define " << n << "_DEPRECATED_IN_2_" << M << " " << n << "_DEPRECATED\n"
+             "#define " << n << "_DEPRECATED_IN_2_" << M << "_FOR(f) " << n << "_DEPRECATED_FOR (f)\n"
+             "#define " << n << "_DEPRECATED_MACRO_IN_2_" << M << " GLIB_DEPRECATED_MACRO\n"
+             "#define " << n << "_DEPRECATED_MACRO_IN_2_" << M << "_FOR(f) GLIB_DEPRECATED_MACRO_FOR (f)\n"
+             "#define " << n << "_DEPRECATED_ENUMERATOR_IN_2_" << M << " GLIB_DEPRECATED_ENUMERATOR\n"
+             "#define " << n << "_DEPRECATED_ENUMERATOR_IN_2_" << M << "_FOR(f) GLIB_DEPRECATED_ENUMERATOR_FOR (f)\n"
+             "#define " << n << "_DEPRECATED_TYPE_IN_2_" << M << " GLIB_DEPRECATED_TYPE\n"
+             "#define " << n << "_DEPRECATED_TYPE_IN_2_" << M << "_FOR(f) GLIB_DEPRECATED_TYPE_FOR (f)\n"
+             "#else\n"
+             "#define " << n << "_DEPRECATED_IN_2_" << M << " _" << n << "_EXTERN\n"
+             "#define " << n << "_DEPRECATED_IN_2_" << M << "_FOR(f) _" << n << "_EXTERN\n"
+             "#define " << n << "_DEPRECATED_MACRO_IN_2_" << M << "\n"
+             "#define " << n << "_DEPRECATED_MACRO_IN_2_" << M << "_FOR(f)\n"
+             "#define " << n << "_DEPRECATED_ENUMERATOR_IN_2_" << M << "\n"
+             "#define " << n << "_DEPRECATED_ENUMERATOR_IN_2_" << M << "_FOR(f)\n"
+             "#define " << n << "_DEPRECATED_TYPE_IN_2_" << M << "\n"
+             "#define " << n << "_DEPRECATED_TYPE_IN_2_" << M << "_FOR(f)\n"
+             "#endif\n"
+             "\n"
+             "#if GLIB_VERSION_MAX_ALLOWED < GLIB_VERSION_2_" << M << "\n"
+             "#define " << n << "_AVAILABLE_IN_2_" << M << " " << n << "_UNAVAILABLE (2, " << M << ")\n"
+             "#define " << n << "_AVAILABLE_STATIC_INLINE_IN_2_" << M << " GLIB_UNAVAILABLE_STATIC_INLINE (2, " << M << ")\n"
+             "#define " << n << "_AVAILABLE_MACRO_IN_2_" << M << " GLIB_UNAVAILABLE_MACRO (2, " << M << ")\n"
+             "#define " << n << "_AVAILABLE_ENUMERATOR_IN_2_" << M << " GLIB_UNAVAILABLE_ENUMERATOR (2, " << M << ")\n"
+             "#define " << n << "_AVAILABLE_TYPE_IN_2_" << M << " GLIB_UNAVAILABLE_TYPE (2, " << M << ")\n"
+             "#else\n"
+             "#define " << n << "_AVAILABLE_IN_2_" << M << " _" << n << "_EXTERN\n"
+             "#define " << n << "_AVAILABLE_STATIC_INLINE_IN_2_" << M << "\n"
+             "#define " << n << "_AVAILABLE_MACRO_IN_2_" << M << "\n"
+             "#define " << n << "_AVAILABLE_ENUMERATOR_IN_2_" << M << "\n"
+             "#define " << n << "_AVAILABLE_TYPE_IN_2_" << M << "\n"
+             "#endif\n";
+    }
+}
+
+// ── meson configure_file → glibconfig.h ─────────────────────────────────────
+//
+// The PUBLIC header every glib consumer includes: it fixes gint32, gsize,
+// GPollFD, the byte order and the thread implementation. Sixty-six
+// substitutions in glibconfig.h.in, and every one is a property of the target
+// rather than a choice — which is why they can be written out rather than
+// probed.
+//
+// ⚠️ THE POINTER-WIDTH ENTRIES ARE NOT CONSTANT. gsize, gssize, gintptr and
+// the printf modifiers differ between LP64 and ILP32, so they come from
+// target_arch() rather than from a copy of some machine's answers.
+void gen_glibconfig()
+{
+    const std::string arch = mcpp::target_arch();
+    const bool lp64 = !(arch == "i386" || arch == "i686" || arch == "arm"
+                        || arch == "armv7" || arch == "x86" || arch == "riscv32");
+
+    // On LP64, size_t is `unsigned long` and the printf modifier is "l"; on
+    // ILP32 it is `unsigned int` with no modifier. glib exposes both through
+    // G_GSIZE_FORMAT, which application code uses in printf.
+    const char *size_type   = lp64 ? "\"unsigned long\"" : "\"unsigned int\"";
+    const char *size_t_type = lp64 ? "unsigned long"     : "unsigned int";
+    const char *ssize_type  = lp64 ? "long"              : "int";
+    const char *size_mod    = lp64 ? "l"                 : "";
+    const char *sizebits    = lp64 ? "64"                : "32";
+    const char *intptr_def  = lp64 ? "typedef signed long gintptr;\ntypedef unsigned long guintptr;"
+                                   : "typedef signed int gintptr;\ntypedef unsigned int guintptr;";
+    const char *intptr_mod  = lp64 ? "\"l\"" : "\"\"";
+    const char *intptr_fmt  = lp64 ? "\"li\"" : "\"i\"";
+    const char *uintptr_fmt = lp64 ? "\"lu\"" : "\"u\"";
+    const char *gint64      = lp64 ? "long"  : "long long";
+    const char *gint64_mod  = lp64 ? "\"l\"" : "\"ll\"";
+    const char *gint64_fmt  = lp64 ? "\"li\"" : "\"lli\"";
+    const char *guint64_fmt = lp64 ? "\"lu\"" : "\"llu\"";
+    const char *gint64_c    = lp64 ? "val##L"  : "val##LL";
+    const char *guint64_c   = lp64 ? "val##UL" : "val##ULL";
+    const char *glib_long   = lp64 ? "long" : "long";
+    const char *longbits    = lp64 ? "64" : "32";
+
+    fs::create_directories(g_inc);
+    std::ofstream o(g_inc / "glibconfig.h");
+    o << "/* GENERATED by build.mcpp from upstream/glib/glibconfig.h.in.\n"
+         " *\n"
+         " * The public configuration header. Every value here is a property of the\n"
+         " * TARGET — type widths, byte order, the poll and socket constants — so it\n"
+         " * is written rather than probed. The pointer-width entries follow\n"
+         " * target_arch(): this build is " << (lp64 ? "LP64" : "ILP32") << " for " << arch << ". */\n"
+         "#ifndef __G_LIBCONFIG_H__\n"
+         "#define __G_LIBCONFIG_H__\n\n"
+         "#include <glib/gmacros.h>\n\n"
+         "#include <limits.h>\n"
+         "#include <float.h>\n"
+         "#define GLIB_HAVE_ALLOCA_H\n\n"
+         "G_BEGIN_DECLS\n\n"
+         "#define G_MINFLOAT\tFLT_MIN\n"
+         "#define G_MAXFLOAT\tFLT_MAX\n"
+         "#define G_MINDOUBLE\tDBL_MIN\n"
+         "#define G_MAXDOUBLE\tDBL_MAX\n"
+         "#define G_MINSHORT\tSHRT_MIN\n"
+         "#define G_MAXSHORT\tSHRT_MAX\n"
+         "#define G_MAXUSHORT\tUSHRT_MAX\n"
+         "#define G_MININT\tINT_MIN\n"
+         "#define G_MAXINT\tINT_MAX\n"
+         "#define G_MAXUINT\tUINT_MAX\n"
+         "#define G_MINLONG\tLONG_MIN\n"
+         "#define G_MAXLONG\tLONG_MAX\n"
+         "#define G_MAXULONG\tULONG_MAX\n\n"
+         "typedef signed char gint8;\n"
+         "typedef unsigned char guint8;\n"
+         "typedef signed short gint16;\n"
+         "typedef unsigned short guint16;\n"
+         "#define G_GINT16_MODIFIER \"h\"\n"
+         "#define G_GINT16_FORMAT \"hi\"\n"
+         "#define G_GUINT16_FORMAT \"hu\"\n"
+         "typedef signed int gint32;\n"
+         "typedef unsigned int guint32;\n"
+         "#define G_GINT32_MODIFIER \"\"\n"
+         "#define G_GINT32_FORMAT \"i\"\n"
+         "#define G_GUINT32_FORMAT \"u\"\n"
+         "#define G_HAVE_GINT64 1\n\n"
+         "typedef signed " << gint64 << " gint64;\n"
+         "typedef unsigned " << gint64 << " guint64;\n\n"
+         "#define G_GINT64_CONSTANT(val)\t(" << gint64_c << ")\n"
+         "#define G_GUINT64_CONSTANT(val)\t(" << guint64_c << ")\n"
+         "#define G_GINT64_MODIFIER " << gint64_mod << "\n"
+         "#define G_GINT64_FORMAT " << gint64_fmt << "\n"
+         "#define G_GUINT64_FORMAT " << guint64_fmt << "\n\n"
+         "#define GLIB_SIZEOF_VOID_P " << (lp64 ? 8 : 4) << "\n"
+         "#define GLIB_SIZEOF_LONG " << (lp64 ? 8 : 4) << "\n"
+         "#define GLIB_SIZEOF_SIZE_T " << (lp64 ? 8 : 4) << "\n"
+         "#define GLIB_SIZEOF_SSIZE_T " << (lp64 ? 8 : 4) << "\n\n"
+         "typedef " << size_t_type << " gsize;\n"
+         "typedef " << ssize_type << " gssize;\n"
+         "#define G_GSIZE_MODIFIER \"" << size_mod << "\"\n"
+         "#define G_GSSIZE_MODIFIER \"" << size_mod << "\"\n"
+         "#define G_GSIZE_FORMAT \"" << size_mod << "u\"\n"
+         "#define G_GSSIZE_FORMAT \"" << size_mod << "i\"\n\n"
+         "#define G_MAXSIZE\tG_MAXU" << (lp64 ? "LONG" : "INT") << "\n"
+         "#define G_MINSSIZE\tG_MIN" << (lp64 ? "LONG" : "INT") << "\n"
+         "#define G_MAXSSIZE\tG_MAX" << (lp64 ? "LONG" : "INT") << "\n\n"
+         "typedef gint64 goffset;\n"
+         "#define G_MINOFFSET\tG_MININT64\n"
+         "#define G_MAXOFFSET\tG_MAXINT64\n\n"
+         "#define G_GOFFSET_MODIFIER      " << gint64_mod << "\n"
+         "#define G_GOFFSET_FORMAT        " << gint64_fmt << "\n"
+         "#define G_GOFFSET_CONSTANT(val) G_GINT64_CONSTANT(val)\n\n"
+         "#define G_POLLFD_FORMAT \"%d\"\n\n"
+         "#define GPOINTER_TO_INT(p)\t((gint)  (glong) (p))\n"
+         "#define GPOINTER_TO_UINT(p)\t((guint) (gulong) (p))\n\n"
+         "#define GINT_TO_POINTER(i)\t((gpointer) (glong) (i))\n"
+         "#define GUINT_TO_POINTER(u)\t((gpointer) (gulong) (u))\n\n"
+      << intptr_def << "\n"
+         "#define G_GINTPTR_MODIFIER      " << intptr_mod << "\n"
+         "#define G_GINTPTR_FORMAT        " << intptr_fmt << "\n"
+         "#define G_GUINTPTR_FORMAT       " << uintptr_fmt << "\n\n"
+         "#define GLIB_MAJOR_VERSION " << MAJOR << "\n"
+         "#define GLIB_MINOR_VERSION " << MINOR << "\n"
+         "#define GLIB_MICRO_VERSION " << MICRO << "\n\n"
+         "#define G_OS_UNIX\n\n"
+         "#define G_VA_COPY va_copy\n"
+         "#define G_VA_COPY_AS_ARRAY 1\n\n"
+         "#ifndef __cplusplus\n"
+         "# define G_HAVE_ISO_VARARGS 1\n"
+         "#endif\n"
+         "#ifdef __cplusplus\n"
+         "# define G_HAVE_ISO_VARARGS 1\n"
+         "#endif\n\n"
+         "#define G_HAVE_GROWING_STACK 0\n"
+         "#define G_HAVE_GNUC_VISIBILITY 1\n\n"
+         "/* ⚠️ G_GNUC_INTERNAL LIVES HERE, not in gmacros.h. Omitting it is not\n"
+         " * a missing convenience: gmodule-deprecated.c declares\n"
+         " * `G_GNUC_INTERNAL gchar* _g_module_build_path(...)` and the failure\n"
+         " * is `unknown type name G_GNUC_INTERNAL`, reported against a source\n"
+         " * file rather than against the header that should have defined it. */\n"
+         "#if defined(__GNUC__) \&\& (__GNUC__ >= 4)\n"
+         "#define G_GNUC_INTERNAL __attribute__((visibility(\"hidden\")))\n"
+         "#elif defined(__SUNPRO_C) \&\& (__SUNPRO_C >= 0x550)\n"
+         "#define G_GNUC_INTERNAL __hidden\n"
+         "#elif defined (__GNUC__) \&\& defined (G_HAVE_GNUC_VISIBILITY)\n"
+         "#define G_GNUC_INTERNAL __attribute__((visibility(\"hidden\")))\n"
+         "#else\n"
+         "#define G_GNUC_INTERNAL\n"
+         "#endif\n\n"
+         "/* Read by gprintf.c to decide whether to use the system printf or\n"
+         " * glib's bundled gnulib one. glibc's is C99-conformant, which is what\n"
+         " * HAVE_GOOD_PRINTF in config.h asserts, so the system one it is —\n"
+         " * and none of glib/gnulib is compiled. */\n"
+         "#define GLIB_USING_SYSTEM_PRINTF\n\n"
+         "#ifndef _MSC_VER\n"
+         "# define G_HAVE_GNUC_VARARGS 1\n"
+         "#endif\n\n"
+         "#define G_THREADS_ENABLED\n"
+         "#define G_THREADS_IMPL_POSIX\n\n"
+         "#define G_ATOMIC_LOCK_FREE\n\n"
+         "#define GINT16_TO_LE(val)\t((gint16) (val))\n"
+         "#define GUINT16_TO_LE(val)\t((guint16) (val))\n"
+         "#define GINT16_TO_BE(val)\t((gint16) GUINT16_SWAP_LE_BE (val))\n"
+         "#define GUINT16_TO_BE(val)\t(GUINT16_SWAP_LE_BE (val))\n"
+         "#define GINT32_TO_LE(val)\t((gint32) (val))\n"
+         "#define GUINT32_TO_LE(val)\t((guint32) (val))\n"
+         "#define GINT32_TO_BE(val)\t((gint32) GUINT32_SWAP_LE_BE (val))\n"
+         "#define GUINT32_TO_BE(val)\t(GUINT32_SWAP_LE_BE (val))\n"
+         "#define GINT64_TO_LE(val)\t((gint64) (val))\n"
+         "#define GUINT64_TO_LE(val)\t((guint64) (val))\n"
+         "#define GINT64_TO_BE(val)\t((gint64) GUINT64_SWAP_LE_BE (val))\n"
+         "#define GUINT64_TO_BE(val)\t(GUINT64_SWAP_LE_BE (val))\n"
+         "#define GLONG_TO_LE(val)\t((glong) GINT" << longbits << "_TO_LE (val))\n"
+         "#define GULONG_TO_LE(val)\t((gulong) GUINT" << longbits << "_TO_LE (val))\n"
+         "#define GLONG_TO_BE(val)\t((glong) GINT" << longbits << "_TO_BE (val))\n"
+         "#define GULONG_TO_BE(val)\t((gulong) GUINT" << longbits << "_TO_BE (val))\n"
+         "#define GINT_TO_LE(val)\t\t((gint) GINT32_TO_LE (val))\n"
+         "#define GUINT_TO_LE(val)\t((guint) GUINT32_TO_LE (val))\n"
+         "#define GINT_TO_BE(val)\t\t((gint) GINT32_TO_BE (val))\n"
+         "#define GUINT_TO_BE(val)\t((guint) GUINT32_TO_BE (val))\n"
+         "#define GSIZE_TO_LE(val)\t((gsize) GUINT" << sizebits << "_TO_LE (val))\n"
+         "#define GSSIZE_TO_LE(val)\t((gssize) GINT" << sizebits << "_TO_LE (val))\n"
+         "#define GSIZE_TO_BE(val)\t((gsize) GUINT" << sizebits << "_TO_BE (val))\n"
+         "#define GSSIZE_TO_BE(val)\t((gssize) GINT" << sizebits << "_TO_BE (val))\n"
+         "#define G_BYTE_ORDER G_LITTLE_ENDIAN\n\n"
+         "#define GLIB_SYSDEF_POLLIN =1\n"
+         "#define GLIB_SYSDEF_POLLOUT =4\n"
+         "#define GLIB_SYSDEF_POLLPRI =2\n"
+         "#define GLIB_SYSDEF_POLLHUP =16\n"
+         "#define GLIB_SYSDEF_POLLERR =8\n"
+         "#define GLIB_SYSDEF_POLLNVAL =32\n\n"
+         "#define G_MODULE_SUFFIX \"so\"\n\n"
+         "typedef int GPid;\n"
+         "#define G_PID_FORMAT \"i\"\n\n"
+         "#define GLIB_SYSDEF_AF_UNIX 1\n"
+         "#define GLIB_SYSDEF_AF_INET 2\n"
+         "#define GLIB_SYSDEF_AF_INET6 10\n\n"
+         "#define GLIB_SYSDEF_MSG_OOB 1\n"
+         "#define GLIB_SYSDEF_MSG_PEEK 2\n"
+         "#define GLIB_SYSDEF_MSG_DONTROUTE 4\n\n"
+         "#define G_DIR_SEPARATOR '/'\n"
+         "#define G_DIR_SEPARATOR_S \"/\"\n"
+         "#define G_SEARCHPATH_SEPARATOR ':'\n"
+         "#define G_SEARCHPATH_SEPARATOR_S \":\"\n\n"
+         "G_END_DECLS\n\n"
+         "#undef GLIB_STATIC_COMPILATION\n"
+         "#undef GOBJECT_STATIC_COMPILATION\n"
+         "#undef GIO_STATIC_COMPILATION\n"
+         "#undef GMODULE_STATIC_COMPILATION\n"
+         "#undef GI_STATIC_COMPILATION\n"
+         "#undef G_INTL_STATIC_COMPILATION\n"
+         "#undef FFI_STATIC_BUILD\n\n"
+         "#endif /* __G_LIBCONFIG_H__ */\n";
+    (void)size_type;
+    (void)glib_long;
+    note("glibconfig.h: %s for %s\n", lp64 ? "LP64" : "ILP32", arch.c_str());
+}
+
+// ── meson configure_file → gmodule/gmoduleconf.h ────────────────────────────
+//
+// Four substitutions, all decided by the platform. On Linux the loader is
+// dlopen, `dlerror` exists, symbols carry no leading underscore and
+// RTLD_GLOBAL works — so three of the four are 0 and the interesting one is
+// G_MODULE_IMPL.
+//
+// ⚠️ The template tests three of them with `#if (@X@)` — a VALUE, not a
+// definition — so 0 is the right way to say no here, and leaving them out
+// would be a syntax error rather than a wrong answer. The opposite of the
+// `#ifdef` rule that governs config.h two functions down; the test style
+// decides, every time.
+void gen_gmoduleconf()
+{
+    const fs::path in = g_up / "gmodule" / "gmoduleconf.h.in";
+    std::string body = slurp(in);
+    struct { const char *k, *v; } vals[] = {
+        {"@G_MODULE_IMPL@",                "G_MODULE_IMPL_DL"},
+        {"@G_MODULE_HAVE_DLERROR@",        "1"},
+        {"@G_MODULE_NEED_USCORE@",         "0"},
+        {"@G_MODULE_BROKEN_RTLD_GLOBAL@",  "0"},
+    };
+    for (const auto &s : vals)
+        for (std::size_t p = body.find(s.k); p != std::string::npos; p = body.find(s.k, p))
+            body.replace(p, std::string(s.k).size(), s.v);
+
+    fs::create_directories(g_inc / "gmodule");
+    std::ofstream(g_inc / "gmodule" / "gmoduleconf.h")
+        << "/* GENERATED by build.mcpp from upstream/gmodule/gmoduleconf.h.in. */\n"
+        << body;
+    mcpp::rerun_if_changed(in.string().c_str());
+}
+
+// ── gobject/glib-mkenums, for the one header it is pointed at ───────────────
+//
+// Upstream's glib-mkenums is 816 lines of Python that scans headers for enum
+// declarations, honours `/*< … >*/` trigraph annotations, and expands a
+// template. This build needs it for exactly ONE input — `glib/gunicode.h`,
+// which contains four enums — so what is reproduced here is the subset that
+// covers those four, not the whole tool.
+//
+// The tool is CALLED TWICE with different templates, and the templates are read
+// from the tree rather than hard-coded, so a change upstream makes to them is
+// picked up.
+struct enum_def {
+    std::string name;                  // GUnicodeType
+    std::string prefix;                // G_UNICODE
+    std::string shortname;             // TYPE
+    std::vector<std::string> values;
+    bool flags = false;
+};
+
+// `GUnicodeBreakType` → prefix `G_UNICODE_BREAK`, short `TYPE`.
+// mkenums derives these by splitting the CamelCase name into words, taking the
+// longest prefix shared with the enumerators' common prefix. The four enums in
+// gunicode.h all follow the plain rule, so the split is computed from the
+// values themselves — which is what mkenums does and is why it needs no table.
+void derive_names(enum_def &e)
+{
+    if (e.values.empty()) return;
+    // Longest common prefix of the enumerator names, cut at the last '_'.
+    std::string lcp = e.values[0];
+    for (const auto &v : e.values) {
+        std::size_t i = 0;
+        while (i < lcp.size() && i < v.size() && lcp[i] == v[i]) ++i;
+        lcp.resize(i);
+    }
+    const std::size_t cut = lcp.rfind('_');
+    if (cut == std::string::npos) return;
+    e.prefix = lcp.substr(0, cut);
+
+    // The short name is the type name with the prefix's words removed, upper
+    // cased and underscore separated: GUnicodeBreakType + G_UNICODE_BREAK →
+    // TYPE.
+    std::string words;
+    for (std::size_t i = 1; i < e.name.size(); ++i) {   // skip the leading 'G'
+        if (std::isupper((unsigned char)e.name[i]) && !words.empty()) words += '_';
+        words += char(std::toupper((unsigned char)e.name[i]));
+    }
+    const std::string full = "G_" + words;
+    e.shortname = (full.size() > e.prefix.size() + 1
+                   && full.compare(0, e.prefix.size(), e.prefix) == 0)
+                      ? full.substr(e.prefix.size() + 1)
+                      : words;
+}
+
+std::vector<enum_def> scan_enums(const fs::path &header)
+{
+    std::vector<enum_def> out;
+    std::ifstream in(header);
+    std::string line;
+    bool inside = false;
+    enum_def cur;
+    while (std::getline(in, line)) {
+        if (!inside) {
+            if (line.find("typedef enum") != std::string::npos) {
+                inside = true;
+                cur = enum_def{};
+                // `/*< flags >*/` on the same line marks a flags type, which
+                // mkenums renders with g_flags_register_static instead.
+                cur.flags = line.find("flags") != std::string::npos;
+            }
+            continue;
+        }
+        const std::size_t close = line.find('}');
+        if (close != std::string::npos) {
+            std::size_t s = line.find_first_not_of(" \t", close + 1);
+            std::size_t e = line.find(';', s);
+            if (s != std::string::npos && e != std::string::npos) {
+                cur.name = line.substr(s, e - s);
+                derive_names(cur);
+                if (!cur.name.empty() && !cur.values.empty()) out.push_back(cur);
+            }
+            inside = false;
+            continue;
+        }
+        // An enumerator: the first identifier on the line, if the line is not a
+        // comment or an annotation.
+        const std::size_t s = line.find_first_not_of(" \t");
+        if (s == std::string::npos) continue;
+        if (line[s] == '/' || line[s] == '*' || line[s] == '#') continue;
+        std::size_t e = s;
+        while (e < line.size() && (std::isalnum((unsigned char)line[e]) || line[e] == '_')) ++e;
+        if (e > s) cur.values.push_back(line.substr(s, e - s));
+    }
+    return out;
+}
+
+// Expand one of upstream's `.template` files. The format is a sequence of
+// `/*** BEGIN <section> ***/ … /*** END <section> ***/` blocks; mkenums emits
+// file-header once, then file-production and value-header per input file and
+// per enum, then file-tail.
+std::string section(const std::string &tpl, const std::string &name)
+{
+    const std::string b = "/*** BEGIN " + name + " ***/";
+    const std::string e = "/*** END " + name + " ***/";
+    const std::size_t s = tpl.find(b);
+    if (s == std::string::npos) return {};
+    const std::size_t bodyStart = tpl.find('\n', s);
+    const std::size_t bodyEnd = tpl.find(e, bodyStart);
+    if (bodyStart == std::string::npos || bodyEnd == std::string::npos) return {};
+    return tpl.substr(bodyStart + 1, bodyEnd - bodyStart - 1);
+}
+
+std::string subst(std::string s, const std::string &k, const std::string &v)
+{
+    for (std::size_t p = s.find(k); p != std::string::npos; p = s.find(k, p + v.size()))
+        s.replace(p, k.size(), v);
+    return s;
+}
+
+void gen_enumtypes()
+{
+    const fs::path header = g_up / "glib" / "gunicode.h";
+    const auto enums = scan_enums(header);
+    if (enums.size() != 4) {
+        // The count is asserted because a silent drop would produce a header
+        // that compiles and a library missing g_unicode_script_get_type — the
+        // failure would land in a consumer, not here.
+        note("gunicode.h yielded %zu enums, expected 4 "
+             "(GUnicodeType, GUnicodeBreakType, GUnicodeScript, GNormalizeMode)\n",
+             enums.size());
+        std::exit(1);
+    }
+    mcpp::rerun_if_changed(header.string().c_str());
+
+    struct { const char *tpl; const char *out; } jobs[] = {
+        {"glib-enumtypes.h.template", "glib-enumtypes.h"},
+        {"glib-enumtypes.c.template", "glib-enumtypes.c"},
+    };
+    fs::create_directories(g_inc / "gobject");
+    for (const auto &j : jobs) {
+        const fs::path tplPath = g_up / "gobject" / j.tpl;
+        const std::string tpl = slurp(tplPath);
+        mcpp::rerun_if_changed(tplPath.string().c_str());
+
+        std::ostringstream o;
+        o << "/* GENERATED by build.mcpp, replacing gobject/glib-mkenums. */\n";
+        o << section(tpl, "file-header");
+        o << subst(section(tpl, "file-production"), "@filename@", "gunicode.h");
+        for (const auto &e : enums) {
+            std::string vh = section(tpl, "value-header");
+            vh = subst(vh, "@enum_name@", [&] {
+                // GUnicodeType → g_unicode_type
+                std::string n;
+                for (std::size_t i = 0; i < e.name.size(); ++i) {
+                    if (std::isupper((unsigned char)e.name[i]) && i) n += '_';
+                    n += char(std::tolower((unsigned char)e.name[i]));
+                }
+                return n;
+            }());
+            vh = subst(vh, "@EnumName@", e.name);
+            vh = subst(vh, "@ENUMPREFIX@", e.prefix);
+            vh = subst(vh, "@ENUMSHORT@", e.shortname);
+            vh = subst(vh, "@type@", e.flags ? "flags" : "enum");
+            vh = subst(vh, "@Type@", e.flags ? "Flags" : "Enum");
+            // The .c template's value-production/value-tail sections list every
+            // enumerator; the .h template has none, so both are handled the
+            // same way here.
+            std::string body;
+            for (const auto &v : e.values) {
+                std::string vp = section(tpl, "value-production");
+                if (vp.empty()) break;
+                vp = subst(vp, "@VALUENAME@", v);
+                vp = subst(vp, "@valuenick@", [&] {
+                    // mkenums' default nick: the enumerator minus the prefix,
+                    // lower cased with underscores turned into hyphens.
+                    std::string n = v.size() > e.prefix.size() + 1
+                                        ? v.substr(e.prefix.size() + 1) : v;
+                    for (auto &c : n) c = (c == '_') ? '-' : char(std::tolower((unsigned char)c));
+                    return n;
+                }());
+                vp = subst(vp, "@valuenum@", v);
+                body += vp;
+            }
+            std::string vt = section(tpl, "value-tail");
+            vt = subst(vt, "@EnumName@", e.name);
+            vt = subst(vt, "@enum_name@", [&] {
+                std::string n;
+                for (std::size_t i = 0; i < e.name.size(); ++i) {
+                    if (std::isupper((unsigned char)e.name[i]) && i) n += '_';
+                    n += char(std::tolower((unsigned char)e.name[i]));
+                }
+                return n;
+            }());
+            vt = subst(vt, "@type@", e.flags ? "flags" : "enum");
+            vt = subst(vt, "@Type@", e.flags ? "Flags" : "Enum");
+            vt = subst(vt, "@ENUMNAME@", [&] {
+                std::string n;
+                for (std::size_t i = 0; i < e.name.size(); ++i) {
+                    if (std::isupper((unsigned char)e.name[i]) && i) n += '_';
+                    n += char(std::toupper((unsigned char)e.name[i]));
+                }
+                return n;
+            }());
+            vt = subst(vt, "@ENUMSHORT@", e.shortname);
+            vt = subst(vt, "@ENUMPREFIX@", e.prefix);
+            o << vh << body << vt;
+        }
+        o << section(tpl, "file-tail");
+
+        std::ofstream f(g_inc / "gobject" / j.out);
+        f << o.str();
+    }
+    note("glib-enumtypes: %zu enums from gunicode.h\n", enums.size());
+}
+
+// ── meson configure_file → config.h ─────────────────────────────────────────
+//
+// The internal probe answers. Everything here describes glibc on Linux with a
+// GCC-compatible compiler, which is the only configuration this package builds
+// for — and, as always, describes THIS build's dependencies rather than
+// upstream's defaults.
+void gen_config()
+{
+    std::ofstream o(g_inc / "config.h");
+    o << "/* GENERATED by build.mcpp — meson's configure_file output for glib\n"
+         " * on Linux/glibc with a GCC-compatible compiler. */\n"
+         "#ifndef MCPP_GLIB_CONFIG_H\n"
+         "#define MCPP_GLIB_CONFIG_H\n\n"
+         "#define GLIB_VERSION \"" << MAJOR << "." << MINOR << "." << MICRO << "\"\n"
+         "#define PACKAGE_VERSION \"" << MAJOR << "." << MINOR << "." << MICRO << "\"\n"
+         "#define PACKAGE_NAME \"glib\"\n"
+         "#define PACKAGE_STRING \"glib " << MAJOR << "." << MINOR << "." << MICRO << "\"\n"
+         "#define PACKAGE_TARNAME \"glib\"\n"
+         "#define PACKAGE_BUGREPORT \"https://gitlab.gnome.org/GNOME/glib/issues/new\"\n"
+         "#define VERSION \"" << MAJOR << "." << MINOR << "." << MICRO << "\"\n\n"
+         "/* ⚠️ ENABLE_NLS must be ON here. Without it glibintl.h:33 does\n"
+         " * `#define gettext(String) (String)` — a function-like macro — and\n"
+         " * ggettext.c then includes <libintl.h>, whose\n"
+         " * `extern char *gettext (const char *)` gets macro-expanded into\n"
+         " * nonsense: `expected identifier or '(' before 'const'`, reported\n"
+         " * against glibc's header. glibc carries gettext in libc itself, so\n"
+         " * there is nothing extra to link. */\n"
+         "#define ENABLE_NLS 1\n"
+         "#define HAVE_LIBINTL_H 1\n"
+         "#define GETTEXT_PACKAGE \"glib20\"\n"
+         "#define GLIB_LOCALE_DIR \"/usr/share/locale\"\n"
+         "#define GLIB_LOCALSTATEDIR \"/var\"\n"
+         "#define GLIB_BINARY_AGE " << (MINOR * 100 + MICRO) << "\n"
+         "#define GLIB_INTERFACE_AGE " << MICRO << "\n\n"
+         "/* ⚠️ EVERY PROBE BELOW IS EITHER DEFINED OR ABSENT. NONE IS 0.\n"
+         " *\n"
+         " * autotools projects test these with `#ifdef`, and `#define HAVE_X 0`\n"
+         " * is therefore a statement that X EXISTS. Writing the negative answers\n"
+         " * as 0 here — HAVE_ISSETUGID, HAVE_LCHMOD, HAVE_GETFSSTAT and six more\n"
+         " * — made glib call BSD interfaces glibc does not have:\n"
+         " *\n"
+         " *   gutils.c:3291: implicit declaration of function 'issetugid'\n"
+         " *\n"
+         " * The same mistake cost cairo an hour of silently drawing nothing.\n"
+         " * The absent ones are listed at the end of this file with their\n"
+         " * consequences, because absence is otherwise indistinguishable from\n"
+         " * an oversight. */\n\n"
+         "/* ── headers ────────────────────────────────────────────────────── */\n"
+         "#define HAVE_ALLOCA_H 1\n#define HAVE_DIRENT_H 1\n#define HAVE_DLFCN_H 1\n"
+         "#define HAVE_SPAWN_H 1\n"
+         "#define HAVE_FLOAT_H 1\n#define HAVE_GRP_H 1\n#define HAVE_INTTYPES_H 1\n"
+         "#define HAVE_LIMITS_H 1\n#define HAVE_LINUX_MAGIC_H 1\n#define HAVE_LOCALE_H 1\n"
+         "#define HAVE_MEMORY_H 1\n#define HAVE_MNTENT_H 1\n#define HAVE_PWD_H 1\n"
+         "#define HAVE_SCHED_H 1\n#define HAVE_STDINT_H 1\n#define HAVE_STDLIB_H 1\n"
+         "#define HAVE_STRINGS_H 1\n#define HAVE_STRING_H 1\n#define HAVE_SYS_INOTIFY_H 1\n"
+         "#define HAVE_SYS_MOUNT_H 1\n#define HAVE_SYS_PARAM_H 1\n#define HAVE_SYS_RESOURCE_H 1\n"
+         "#define HAVE_SYS_SELECT_H 1\n#define HAVE_SYS_STATFS_H 1\n#define HAVE_SYS_STATVFS_H 1\n"
+         "#define HAVE_SYS_STAT_H 1\n#define HAVE_SYS_SYSMACROS_H 1\n#define HAVE_SYS_TIMES_H 1\n"
+         "#define HAVE_SYS_TIME_H 1\n#define HAVE_SYS_TYPES_H 1\n#define HAVE_SYS_UIO_H 1\n"
+         "#define HAVE_SYS_VFS_H 1\n#define HAVE_SYS_WAIT_H 1\n#define HAVE_SYS_XATTR_H 1\n"
+         "#define HAVE_TERMIOS_H 1\n#define HAVE_UNISTD_H 1\n#define HAVE_VALUES_H 1\n"
+         "#define HAVE_WCHAR_H 1\n#define HAVE_WCTYPE_H 1\n\n"
+         "/* ── functions ──────────────────────────────────────────────────── */\n"
+         "#define HAVE_ACCEPT4 1\n#define HAVE_ALIGNED_ALLOC 1\n#define HAVE_BIND_TEXTDOMAIN_CODESET 1\n"
+         "#define HAVE_CLOSE_RANGE 1\n#define HAVE_COPY_FILE_RANGE 1\n#define HAVE_DUP3 1\n"
+         "#define HAVE_ENDMNTENT 1\n#define HAVE_ENDSERVENT 1\n#define HAVE_EPOLL_CREATE1 1\n"
+         "#define HAVE_EVENTFD 1\n#define HAVE_FALLOCATE 1\n#define HAVE_FCHMOD 1\n"
+         "#define HAVE_FCHOWN 1\n#define HAVE_FDWALK 1\n#define HAVE_FSYNC 1\n"
+         "#define HAVE_FTRUNCATE64 1\n#define HAVE_GETAUXVAL 1\n#define HAVE_GETC_UNLOCKED 1\n"
+         "#define HAVE_GETGRGID_R 1\n#define HAVE_GETMNTENT_R 1\n"
+         "#define HAVE_GETPWUID_R 1\n#define HAVE_GETRESUID 1\n"
+         "#define HAVE_GMTIME_R 1\n#define HAVE_HASMNTOPT 1\n#define HAVE_IF_INDEXTONAME 1\n"
+         "#define HAVE_IF_NAMETOINDEX 1\n#define HAVE_INOTIFY_INIT1 1\n"
+         "#define HAVE_KILL 1\n#define HAVE_LCHOWN 1\n"
+         "#define HAVE_LINK 1\n#define HAVE_LOCALTIME_R 1\n#define HAVE_LSTAT 1\n"
+         "#define HAVE_MEMALIGN 1\n#define HAVE_MEMMEM 1\n#define HAVE_MKOSTEMP 1\n"
+         "#define HAVE_MMAP 1\n#define HAVE_NEWLOCALE 1\n#define HAVE_OPEN_MEMSTREAM 1\n"
+         "#define HAVE_PIPE2 1\n#define HAVE_POLL 1\n#define HAVE_POSIX_MEMALIGN 1\n"
+         "#define HAVE_POSIX_SPAWN 1\n#define HAVE_PRLIMIT 1\n#define HAVE_PROC_SELF_CMDLINE 1\n"
+         "#define HAVE_PTHREAD_ATTR_SETINHERITSCHED 1\n"
+         "#define HAVE_PTHREAD_CONDATTR_SETCLOCK 1\n"
+         "#define HAVE_PTHREAD_GETNAME_NP 1\n#define HAVE_PTHREAD_SETNAME_NP_WITH_TID 1\n"
+         "#define HAVE_READLINK 1\n#define HAVE_RECVMMSG 1\n#define HAVE_RES_INIT 1\n"
+         "#define HAVE_RES_NCLOSE 1\n#define HAVE_RES_NINIT 1\n#define HAVE_RES_NQUERY 1\n"
+         "#define HAVE_SENDMMSG 1\n#define HAVE_SETENV 1\n#define HAVE_SETMNTENT 1\n"
+         "#define HAVE_SIG_ATOMIC_T 1\n#define HAVE_SIOCGIFADDR 1\n#define HAVE_SNPRINTF 1\n"
+         "#define HAVE_SPLICE 1\n#define HAVE_STATFS 1\n#define HAVE_STATVFS 1\n"
+         "#define HAVE_STPCPY 1\n#define HAVE_STRCASECMP 1\n#define HAVE_STRERROR_R 1\n"
+         "/* ⚠️ glibc has TWO strerror_r. With _GNU_SOURCE it is the GNU one,\n"
+         " * returning char*; the XSI one returns int. glib chooses with\n"
+         " * `#ifdef STRERROR_R_CHAR_P`, and choosing wrong is a compile error\n"
+         " * rather than a silent one — gstrfuncs.c:1320, `assignment to int\n"
+         " * from char *`. This package passes -D_GNU_SOURCE, so: char*. */\n"
+         "#define STRERROR_R_CHAR_P 1\n"
+         "#define HAVE_STRNCASECMP 1\n#define HAVE_STRNLEN 1\n#define HAVE_STRSIGNAL 1\n"
+         "#define HAVE_STRTOD_L 1\n#define HAVE_STRTOLL_L 1\n#define HAVE_STRTOULL_L 1\n"
+         "#define HAVE_SYMLINK 1\n#define HAVE_TIMEGM 1\n"
+         "#define HAVE_UNSETENV 1\n#define HAVE_USELOCALE 1\n#define HAVE_UTIMES 1\n"
+         "#define HAVE_VALLOC 1\n#define HAVE_VASPRINTF 1\n#define HAVE_VSNPRINTF 1\n"
+         "#define HAVE_WCRTOMB 1\n#define HAVE_WCSLEN 1\n#define HAVE_WCSNLEN 1\n\n"
+         "/* ── types and members ──────────────────────────────────────────── */\n"
+         "#define HAVE_LONG_LONG 1\n#define HAVE_LONG_DOUBLE 1\n"
+         "#define HAVE_STRUCT_DIRENT_D_TYPE 1\n"
+         ""
+         "#define HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC 1\n"
+         "#define HAVE_STRUCT_STAT_ST_BLKSIZE 1\n#define HAVE_STRUCT_STAT_ST_BLOCKS 1\n"
+         "#define HAVE_STRUCT_STATFS_F_BAVAIL 1\n"
+         ""
+         "#define HAVE_STRUCT_TM_TM_GMTOFF 1\n\n"
+         "/* ── sizes, on the target this build is for ─────────────────────── */\n"
+         "#define SIZEOF_CHAR 1\n#define SIZEOF_INT 4\n#define SIZEOF_SHORT 2\n"
+         "#define SIZEOF_LONG_LONG 8\n#define SIZEOF_WCHAR_T 4\n\n"
+         "/* ── things glib asks about itself ──────────────────────────────── */\n"
+         "/* ⚠️ USE_STATFS / USE_STATVFS are `#ifdef`-tested. Defining the unused\n"
+         " * one to 0 would say YES, and gio would call the wrong one. */\n"
+         "#define USE_STATFS 1\n\n"
+         "#define ALIGNOF_GUINT32 4\n#define ALIGNOF_GUINT64 8\n#define ALIGNOF_UNSIGNED_LONG 8\n"
+         "#define G_VA_COPY_AS_ARRAY 1\n"
+         "#define G_HAVE_GROWING_STACK 0\n"
+         "/* ⚠️ TWO DIFFERENT MACROS, and only this one selects anything.\n"
+         " * `USE_SYSTEM_PRINTF` lives in config.h and is what gprintfint.h\n"
+         " * tests; `GLIB_USING_SYSTEM_PRINTF` lives in the PUBLIC glibconfig.h\n"
+         " * and only reports the decision. Setting the public one alone leaves\n"
+         " * glib calling its bundled gnulib printf, and since none of\n"
+         " * glib/gnulib is compiled here the link fails with a page of\n"
+         " * `undefined reference to _g_gnulib_snprintf`. */\n"
+         "#define USE_SYSTEM_PRINTF 1\n"
+         "#define HAVE_C99_SNPRINTF 1\n#define HAVE_C99_VSNPRINTF 1\n"
+         "#define HAVE_UNIX98_PRINTF 1\n"
+         "#define HAVE_GOOD_PRINTF 1\n\n"
+         "/* THREADS_POSIX is `#ifdef`-tested throughout gthread; the Windows\n"
+         " * alternative is THREADS_WIN32 and it stays absent. */\n"
+         "#define THREADS_POSIX 1\n\n"
+         "/* pcre2 comes from compat.pcre2, built without the JIT — glib checks\n"
+         " * this at run time through pcre2_config() and takes the interpreter\n"
+         " * path, so nothing here needs to say so. */\n"
+         "\n"
+         "/* No libmount, no sysprof, no selinux, no libelf: none is in this index\n"
+         " * and each is `#ifdef`-tested, so each is ABSENT rather than 0.\n"
+         " *   HAVE_LIBMOUNT     — gio's GUnixMountMonitor loses mount-option\n"
+         " *                       detail and falls back to /proc/self/mountinfo\n"
+         " *   HAVE_SYSPROF      — tracing\n"
+         " *   HAVE_SELINUX      — gio's SELinux attribute support\n"
+         " *   HAVE_LIBELF       — gio module scanning\n"
+         " *   HAVE_XATTR        — needs libattr; gio degrades cleanly */\n\n"
+         "#endif\n";
+}
+
+} // namespace
+
+int main()
+{
+    if (std::string(mcpp::target_os()) != "linux") {
+        note("this package builds glib for Linux only: the generated glibconfig.h\n"
+             "fixes G_OS_UNIX, the POSIX thread implementation and the POLL\n"
+             "constants, none of which is right anywhere else.\n");
+        return 1;
+    }
+
+    g_root = fs::path(mcpp::manifest_dir());
+    g_up   = (g_root / ".." / ".." / "upstream").lexically_normal();
+    g_inc  = g_root / ".." / "include";
+    g_inc  = g_inc.lexically_normal();
+
+    std::error_code ec;
+    // Wiped so a header that stopped being generated stops shadowing too. The
+    // DIRECTORY survives, with its .gitkeep: mcpp reads `include_dirs` before
+    // running this program and silently drops an entry that does not exist.
+    for (const char *sub : {"glib", "gobject", "gmodule"})
+        fs::remove_all(g_inc / sub, ec);
+    fs::create_directories(g_inc, ec);
+
+    gen_version_macros();
+    gen_visibility("GLIB",    g_inc / "glib"    / "glib-visibility.h");
+    gen_visibility("GOBJECT", g_inc / "gobject" / "gobject-visibility.h");
+    gen_visibility("GMODULE", g_inc / "gmodule" / "gmodule-visibility.h");
+    gen_glibconfig();
+    gen_gmoduleconf();
+    gen_enumtypes();
+    gen_config();
+
+    mcpp::rerun_if_changed("build.mcpp");
+    return 0;
+}

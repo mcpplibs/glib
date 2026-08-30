@@ -1,0 +1,2 @@
+[workspace]
+members = ["mcpp/glib", "mcpp/gobject", "mcpp/gmodule"]

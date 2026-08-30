@@ -1,0 +1,60 @@
+# gmodule — portable dynamic module loading.
+#
+# A thin, portable wrapper over dlopen/dlsym. Small enough to look like an
+# afterthought and load-bearing anyway: gio's extension points, pango's module
+# loading and every plugin system in the GNOME stack go through
+# `g_module_open`.
+#
+# Two sources and one generated header. It is a separate member rather than
+# part of glib because upstream ships it as a separate library
+# (libgmodule-2.0.so) with its own visibility namespace — GMODULE_COMPILATION
+# switches `_GMODULE_EXTERN` from import to export, and a consumer that linked
+# glib would otherwise get gmodule's symbols whether it asked or not.
+[package]
+namespace   = "gnome"
+name        = "gmodule"
+version     = "2.82.5"
+standard    = "c++23"
+description = "GModule 2.82.5 — portable dynamic module loading over dlopen"
+license     = "LGPL-2.1-or-later"
+repo        = "https://gitlab.gnome.org/GNOME/glib"
+
+[build]
+sources = [
+    "../../upstream/gmodule/gmodule.c",
+    "../../upstream/gmodule/gmodule-deprecated.c",
+]
+
+include_dirs = [
+    # `../include/gmodule` FIRST because gmodule.c writes
+    # `#include "gmoduleconf.h"` by bare name — upstream generates it into the
+    # gmodule build directory, so it is not under a `gmodule/` prefix there.
+    # The generator here keeps the per-library subdirectory, so the subdirectory
+    # has to be on the path as well.
+    "../include/gmodule",
+    "../include",
+    "../../upstream",
+    "../../upstream/glib",
+    "../../upstream/gmodule",
+]
+
+cflags = [
+    "-DGMODULE_COMPILATION",
+    '-DG_LOG_DOMAIN=\"GModule\"',
+    "-DHAVE_CONFIG_H",
+    "-D_GNU_SOURCE",
+    "-D_POSIX_C_SOURCE=200809L",
+    "-Wno-unused-parameter",
+    "-fPIC",
+]
+
+# `-ldl`: dlopen and friends. On glibc 2.34 and later they are in libc itself
+# and the flag is a no-op, but it is not on the glibc versions this index still
+# targets, and an unnecessary -ldl costs nothing.
+ldflags = ["-ldl", "-pthread"]
+
+[targets.gmodule-2_0]
+kind = "lib"
+
+[dependencies]
+gnome.glib = { path = "../glib" }

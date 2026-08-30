@@ -1,0 +1,225 @@
+# glib — the base library of the GNOME stack.
+#
+# Data structures, the main loop, UTF-8 and Unicode, GVariant, GRegex, file and
+# process utilities. Everything above it — GObject, GIO, Pango, GTK — is built
+# on this, and so is a long tail of libraries that use it for nothing more than
+# GHashTable and GError.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# WHY A FORK
+#
+# Five generators, and the criterion in this index is generators rather than
+# line count:
+#
+#   tools/gen-visibility-macros.py  versions-macros    glib/gversionmacros.h
+#   tools/gen-visibility-macros.py  visibility-macros  three *-visibility.h
+#   meson configure_file            glibconfig.h.in    glibconfig.h
+#   gobject/glib-mkenums (Python)                      glib-enumtypes.{h,c}
+#   meson configure_file                               config.h
+#
+# All five are text transformations over inputs in the tree, so none needs an
+# interpreter: `build.mcpp` is a compiled C++ program and each generator is a
+# function in it. The tree carries no `sh` and no `python`.
+#
+# ⭐ THE ENUM GENERATOR IS REPRODUCED FOR ONE INPUT, NOT WHOLESALE. Upstream's
+# glib-mkenums is 816 lines of Python, but this build points it at exactly one
+# header — `glib/gunicode.h`, four enums — so what `build.mcpp` implements is
+# the subset that covers those four. It reads upstream's `.template` files from
+# the tree rather than hard-coding them, so a template change is picked up, and
+# it EXITS NON-ZERO if the header stops yielding four enums: a silent drop would
+# produce a library missing `g_unicode_script_get_type` and the failure would
+# land in a consumer.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# ⚠️ `include/` IS FIRST IN include_dirs, AND THAT ORDERING IS LOAD-BEARING
+#
+# glib's sources say `#include "config.h"`, and `config.h` is the most
+# contested file name in C — the wlroots fork measured SIX of them on one
+# include path, and read the wrong one. A build program's own
+# `mcpp::include_dir()` is appended AFTER every dependency's, so a generated
+# config.h placed there loses to any dependency that ships one. Manifest
+# entries come first, so the generated tree is named here and written by
+# `build.mcpp` before compilation, the same way `src/*.cppm` is.
+#
+# `include/.gitkeep` is committed because mcpp builds the compiler command line
+# BEFORE running the build program and silently drops an `include_dirs` entry
+# that does not exist yet.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# WHAT IS NOT HERE
+#
+# `gio` is absent, and the reason is specific rather than a matter of effort:
+# two of its six generators are `gdbus-codegen`, an 8,351-line Python program
+# that turns D-Bus interface XML into GObject skeletons. Seven gio sources
+# depend on its output and two more reference them, so it cannot be dropped
+# without changing what gio is. Reproducing it in `build.mcpp` is not
+# proportionate to what its consumers need. Recorded so the gap reads as
+# measured rather than forgotten.
+[package]
+namespace   = "gnome"
+name        = "glib"
+version     = "2.82.5"
+standard    = "c++23"
+description = "GLib 2.82.5 — data structures, the main loop, Unicode and GVariant, with every meson generator reimplemented in build.mcpp"
+license     = "LGPL-2.1-or-later"
+repo        = "https://gitlab.gnome.org/GNOME/glib"
+
+[build]
+# Upstream's list from glib/meson.build, plus the Linux-only additions from the
+# `host_system` branches below it. Listed rather than globbed because `glib/`
+# also holds the Windows implementations (`gwin32.c`, `gspawn-win32.c`,
+# `giowin32.c`) and `dirent/`, which are alternatives to these rather than
+# companions — a glob would take both and the link would have two definitions.
+sources = [
+    "../../upstream/glib/garcbox.c",
+    "../../upstream/glib/garray.c",
+    "../../upstream/glib/gasyncqueue.c",
+    "../../upstream/glib/gatomic.c",
+    "../../upstream/glib/gbacktrace.c",
+    "../../upstream/glib/gbase64.c",
+    "../../upstream/glib/gbitlock.c",
+    "../../upstream/glib/gbookmarkfile.c",
+    "../../upstream/glib/gbytes.c",
+    "../../upstream/glib/gcharset.c",
+    "../../upstream/glib/gchecksum.c",
+    "../../upstream/glib/gconvert.c",
+    "../../upstream/glib/gdataset.c",
+    "../../upstream/glib/gdate.c",
+    "../../upstream/glib/gdatetime.c",
+    "../../upstream/glib/gdatetime-private.c",
+    "../../upstream/glib/gdir.c",
+    "../../upstream/glib/genviron.c",
+    "../../upstream/glib/gerror.c",
+    "../../upstream/glib/gfileutils.c",
+    "../../upstream/glib/ggettext.c",
+    "../../upstream/glib/ghash.c",
+    "../../upstream/glib/ghmac.c",
+    "../../upstream/glib/ghook.c",
+    "../../upstream/glib/ghostutils.c",
+    "../../upstream/glib/giochannel.c",
+    "../../upstream/glib/gkeyfile.c",
+    "../../upstream/glib/glib-init.c",
+    "../../upstream/glib/glib-private.c",
+    "../../upstream/glib/glist.c",
+    "../../upstream/glib/gmain.c",
+    "../../upstream/glib/gmappedfile.c",
+    "../../upstream/glib/gmarkup.c",
+    "../../upstream/glib/gmem.c",
+    "../../upstream/glib/gmessages.c",
+    "../../upstream/glib/gnode.c",
+    "../../upstream/glib/goption.c",
+    "../../upstream/glib/gpathbuf.c",
+    "../../upstream/glib/gpattern.c",
+    "../../upstream/glib/gpoll.c",
+    "../../upstream/glib/gprimes.c",
+    "../../upstream/glib/gqsort.c",
+    "../../upstream/glib/gquark.c",
+    "../../upstream/glib/gqueue.c",
+    "../../upstream/glib/grand.c",
+    "../../upstream/glib/grcbox.c",
+    "../../upstream/glib/grefcount.c",
+    "../../upstream/glib/grefstring.c",
+    "../../upstream/glib/gregex.c",
+    "../../upstream/glib/gscanner.c",
+    "../../upstream/glib/gsequence.c",
+    "../../upstream/glib/gshell.c",
+    "../../upstream/glib/gslice.c",
+    "../../upstream/glib/gslist.c",
+    "../../upstream/glib/gspawn.c",
+    "../../upstream/glib/gstdio.c",
+    "../../upstream/glib/gstrfuncs.c",
+    "../../upstream/glib/gstring.c",
+    "../../upstream/glib/gstringchunk.c",
+    "../../upstream/glib/gstrvbuilder.c",
+    "../../upstream/glib/gtestutils.c",
+    "../../upstream/glib/gthread.c",
+    "../../upstream/glib/gthreadpool.c",
+    "../../upstream/glib/gtimer.c",
+    "../../upstream/glib/gtimezone.c",
+    "../../upstream/glib/gtrace.c",
+    "../../upstream/glib/gtranslit.c",
+    "../../upstream/glib/gtrashstack.c",
+    "../../upstream/glib/gtree.c",
+    "../../upstream/glib/guniprop.c",
+    "../../upstream/glib/gutf8.c",
+    "../../upstream/glib/gunibreak.c",
+    "../../upstream/glib/gunicollate.c",
+    "../../upstream/glib/gunidecomp.c",
+    "../../upstream/glib/guri.c",
+    "../../upstream/glib/gutils.c",
+    "../../upstream/glib/guuid.c",
+    "../../upstream/glib/gvariant.c",
+    "../../upstream/glib/gvariant-core.c",
+    "../../upstream/glib/gvariant-parser.c",
+    "../../upstream/glib/gvariant-serialiser.c",
+    "../../upstream/glib/gvarianttypeinfo.c",
+    "../../upstream/glib/gvarianttype.c",
+    "../../upstream/glib/gversion.c",
+    "../../upstream/glib/gwakeup.c",
+    "../../upstream/glib/gprintf.c",
+
+    # The POSIX half. Upstream picks these in the `host_system != 'windows'`
+    # branch; the Windows alternatives are deliberately absent above.
+    "../../upstream/glib/glib-unix.c",
+    "../../upstream/glib/gspawn-posix.c",
+    "../../upstream/glib/giounix.c",
+
+    # Linux only — structured logging to the journal.
+    "../../upstream/glib/gjournal-private.c",
+
+    # Still built, still exported, still used by things that have not moved on.
+    "../../upstream/glib/deprecated/*.c",
+
+    # libcharset: the character-set alias table behind g_get_charset().
+    "../../upstream/glib/libcharset/localcharset.c",
+]
+
+include_dirs = [
+    # FIRST, deliberately — see the note above about `config.h`.
+    "../include",
+    "../../upstream",
+    "../../upstream/glib",
+]
+
+cflags = [
+    # GLIB_COMPILATION is what turns the visibility macros from "import" to
+    # "export"; without it every symbol this library defines is declared
+    # __declspec(dllimport)/hidden and the link fails in the consumer.
+    "-DGLIB_COMPILATION",
+    # ⚠️ The quotes must reach the compiler. A TOML basic string strips them
+    # and gcc reports `<command-line>: error: 'GLib' undeclared`; a literal
+    # string (`"-DG_LOG_DOMAIN=\\"GLib\\""`) they arrive stripped and gcc
+    # reports `<command-line>: error: 'GLib' undeclared`. A TOML LITERAL
+    # string keeps the backslashes, which is the form mcpplibs/wayland uses
+    # for -DICONDIR.
+    '-DG_LOG_DOMAIN=\"GLib\"',
+    # libcharset reads it as GLIB_CHARSETALIAS_DIR, the directory holding
+    # charset.alias. Nothing in this package installs one, so the FHS path
+    # is the honest value: a lookup there simply finds nothing and
+    # g_get_charset() falls back to nl_langinfo(CODESET).
+    '-DLIBDIR=\"/usr/lib\"',
+    "-DHAVE_CONFIG_H",
+    "-D_GNU_SOURCE",
+    # glib reaches for POSIX 2008 interfaces directly (openat, mkostemp).
+    "-D_POSIX_C_SOURCE=200809L",
+    # Upstream's own suppressions: these fire in generated tables and in the
+    # deprecated sources it still ships.
+    "-Wno-unused-parameter",
+    "-Wno-missing-field-initializers",
+    "-Wno-declaration-after-statement",
+    # glib is linked into shared objects — every library above it is one — so
+    # the objects must be position independent.
+    "-fPIC",
+]
+
+# `-lm` for the maths in gtimer/grand; `-pthread` for GThread's POSIX
+# implementation, which is what THREADS_POSIX in the generated config.h selects.
+ldflags = ["-lm", "-pthread"]
+
+[targets.glib-2_0]
+kind = "lib"
+
+[dependencies]
+# GRegex is written against pcre2's 8-bit API and upstream makes it a hard
+# dependency (`libpcre2-8`, required: true).
+compat.pcre2 = "10.44"

@@ -1,0 +1,154 @@
+name: ci
+
+# What this checks that a plain `mcpp build` does not:
+#
+#   - BOTH toolchains. The llvm leg uses lld and no sysroot, and in this
+#     ecosystem it has repeatedly caught things gcc structurally cannot see.
+#   - that upstream/ is the release tarball byte for byte. Everything this fork
+#     adds lives under mcpp/.
+#   - that the GENERATED headers say what they are supposed to. Five of them
+#     are produced by hand-reimplemented generators, and a wrong answer in
+#     glibconfig.h does not fail to compile — it changes the width of gsize or
+#     which printf glib calls. The tests assert the behaviour; this step
+#     asserts the text, because the two fail differently.
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [default, llvm]
+    name: build (${{ matrix.toolchain }})
+    steps:
+      - uses: actions/checkout@v4
+
+      # XLINGS_NON_INTERACTIVE: without it the installer takes its `curl | bash`
+      # branch (`xlings self install < /dev/tty`) and a runner's /dev/tty is
+      # readable but not connected.
+      #
+      # XLINGS_VERSION pins the INSTALLER so a red run can be told apart from an
+      # ecosystem change. mcpp itself stays unpinned: this package depends on
+      # the current ecosystem, and a pinned mcpp carries a frozen snapshot.
+      #
+      # The second PATH entry is the one that matters: `mcpp` is installed INTO
+      # THE SUBOS, so without subos/default/bin the next step dies with a bare
+      # `mcpp: command not found`.
+      - name: Install xlings + mcpp
+        env:
+          XLINGS_NON_INTERACTIVE: "1"
+          XLINGS_VERSION: "2026.8.27.5"
+        run: |
+          curl -fsSL https://d2learn.org/xlings-install.sh | bash
+          echo "$HOME/.xlings/bin" >> "$GITHUB_PATH"
+          "$HOME/.xlings/bin/xlings" --version
+          "$HOME/.xlings/bin/xlings" install mcpp
+          echo "$HOME/.xlings/subos/default/bin" >> "$GITHUB_PATH"
+
+      # A clean runner carries the index snapshot of the day its image was
+      # built, so a package published since then is simply absent. This fork
+      # needs compat.pcre2, which is new.
+      - name: refresh the index
+        run: mcpp index update
+
+      # `toolchain default` alone fails with "llvm@ is not installed": the
+      # runner image carries only the default toolchain.
+      - name: select toolchain
+        if: matrix.toolchain == 'llvm'
+        run: |
+          mcpp toolchain install llvm
+          mcpp toolchain default llvm
+
+      - name: glib
+        run: cd mcpp/glib && mcpp test
+
+      - name: gobject
+        run: cd mcpp/gobject && mcpp test
+
+      - name: gmodule
+        run: cd mcpp/gmodule && mcpp test
+
+      # Not "did it build" — what the generators actually wrote. Each of these
+      # would compile and link if it were wrong.
+      - name: the generated headers say what they should
+        run: |
+          cd mcpp
+          echo "--- generated ---"
+          find include -type f | sort
+
+          # glibconfig.h: the public type model.
+          grep -qx '#define GLIB_SIZEOF_VOID_P 8' include/glibconfig.h \
+            || { echo "::error::glibconfig.h does not describe an LP64 target"; exit 1; }
+          grep -qx '#define G_BYTE_ORDER G_LITTLE_ENDIAN' include/glibconfig.h \
+            || { echo "::error::glibconfig.h byte order is wrong for this runner"; exit 1; }
+          # G_GNUC_INTERNAL lives in glibconfig.h, not gmacros.h. Omitting it is
+          # how gmodule-deprecated.c failed with `unknown type name`.
+          grep -q 'G_GNUC_INTERNAL' include/glibconfig.h \
+            || { echo "::error::glibconfig.h is missing G_GNUC_INTERNAL"; exit 1; }
+
+          # gversionmacros.h: one block per even minor up to the current one.
+          n=$(grep -c '^#define GLIB_VERSION_2_' include/glib/gversionmacros.h)
+          echo "GLIB_VERSION_2_x macros: $n"
+          [ "$n" -ge 41 ] || { echo "::error::only $n version macros; expected one per even minor to 2.82"; exit 1; }
+          grep -q 'GLIB_VERSION_2_82' include/glib/gversionmacros.h \
+            || { echo "::error::gversionmacros.h stops before the current version"; exit 1; }
+
+          # glib-enumtypes: the mkenums reimplementation. Four enums, and the
+          # count is asserted because a silent drop produces a library missing
+          # g_unicode_script_get_type and the failure lands in a consumer.
+          t=$(grep -c '_get_type (void)' include/gobject/glib-enumtypes.h)
+          echo "generated enum types: $t"
+          [ "$t" -eq 4 ] || { echo "::error::$t enum types, expected 4"; exit 1; }
+          grep -q 'g_unicode_script_get_type' include/gobject/glib-enumtypes.h \
+            || { echo "::error::GUnicodeScript did not survive mkenums"; exit 1; }
+          # The nick is the fiddly half of the generator: prefix stripped, lower
+          # cased, underscores to hyphens.
+          grep -q '"han"' include/gobject/glib-enumtypes.c \
+            || { echo "::error::the enum nicks are not what mkenums derives"; exit 1; }
+
+          # config.h: two macros with almost the same name, and only one of
+          # them selects anything.
+          grep -qx '#define USE_SYSTEM_PRINTF 1' include/config.h \
+            || { echo "::error::config.h would select glib's bundled gnulib printf"; exit 1; }
+          # ⚠️ `^#define`, not a bare grep: config.h EXPLAINS in a comment why
+          # this macro and eight others are absent, and a loose match would
+          # find the explanation and fail on it.
+          grep -qE '^#define +HAVE_ISSETUGID' include/config.h \
+            && { echo "::error::HAVE_ISSETUGID is DEFINED; it is #ifdef-tested, so any value at all says glibc has it"; exit 1; }
+          for m in HAVE_LCHMOD HAVE_GETFSSTAT HAVE_SYSCTLBYNAME HAVE_XLOCALE_H; do
+            grep -qE "^#define +$m" include/config.h \
+              && { echo "::error::$m is DEFINED; it is #ifdef-tested and must be absent"; exit 1; }
+          done
+          echo "the nine #ifdef-tested negatives are absent, not 0"
+
+          # gmoduleconf.h: the loader selection.
+          grep -q 'G_MODULE_IMPL_DL' include/gmodule/gmoduleconf.h \
+            || { echo "::error::gmoduleconf.h did not select the dl loader"; exit 1; }
+
+          echo "all generated headers check out"
+
+  upstream:
+    runs-on: ubuntu-latest
+    name: upstream/ is the release tarball, unmodified
+    steps:
+      - uses: actions/checkout@v4
+      - name: diff upstream/ against glib 2.82.5
+        run: |
+          curl -fsSL -o /tmp/u.tar.xz \
+            https://download.gnome.org/sources/glib/2.82/glib-2.82.5.tar.xz
+          mkdir -p /tmp/u && tar xf /tmp/u.tar.xz -C /tmp/u --strip-components=1
+          if ! diff -r -q /tmp/u upstream >/dev/null 2>&1; then
+            echo "::error::upstream/ differs from glib 2.82.5. Everything this fork adds belongs under mcpp/."
+            diff -r -q /tmp/u upstream | head -20
+            exit 1
+          fi
+          echo "upstream/ is 2.82.5, unmodified"
