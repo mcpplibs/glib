@@ -21,14 +21,25 @@
 
 #ifdef __linux__
 
-// ⚠️ WRAPPED IN extern "C". glib's headers do have their own G_BEGIN_DECLS, so
-// this is belt and braces rather than a necessity — but the generated
-// glib-enumtypes.h is produced from a template that emits G_BEGIN_DECLS too,
-// and asserting that here is cheaper than discovering it is missing.
-extern "C" {
+// ⚠️ NO extern "C" WRAPPER, and adding one BREAKS THIS UNDER libc++.
+//
+// glib decorates every header with G_BEGIN_DECLS/G_END_DECLS, which IS
+// `extern "C" {`, so a wrapper is redundant. It is also harmful: glib.h pulls
+// <stdlib.h> and <string.h>, and libc++ routes those through
+// <cstdlib>/<cstring>, which define TEMPLATES. Inside an extern "C" block that
+// is
+//
+//   __type_traits/add_cv_quals.h:20: error: templates must have C++ linkage
+//
+// reported dozens of times against a standard-library header this test never
+// names. libstdc++ does not route them that way, so the gcc leg is green and
+// the llvm leg is a wall of errors — the same asymmetry that caught a missing
+// <sstream> in the cairo fork.
+//
+// The rule: wrap a C header ONLY if it has no extern "C" of its own.
+// compat.libseat and freedesktop.libdisplay-info need it; glib does not.
 #include <glib-object.h>
 #include <gobject/glib-enumtypes.h>
-}
 
 #include <cstdio>
 #include <cstring>

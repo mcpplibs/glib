@@ -23,9 +23,13 @@
 
 #ifdef __linux__
 
-extern "C" {
+// ⚠️ NO extern "C" WRAPPER, and adding one BREAKS THIS UNDER libc++: glib
+// decorates every header with G_BEGIN_DECLS (which IS `extern "C" {`), and
+// glib.h pulls <stdlib.h>, which libc++ routes through <cstdlib> — templates
+// inside an extern "C" block. `templates must have C++ linkage`, dozens of
+// times, against a header this test never names. libstdc++ does not, so gcc is
+// green and llvm is a wall. Wrap a C header only if it has none of its own.
 #include <glib.h>
-}
 
 #include <cstdio>
 #include <cstring>
