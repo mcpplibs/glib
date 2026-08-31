@@ -13,7 +13,7 @@
 [package]
 namespace   = "gnome"
 name        = "gmodule"
-version     = "2.82.5.1"
+version     = "2.82.5"
 standard    = "c++23"
 description = "GModule 2.82.5 — portable dynamic module loading over dlopen"
 license     = "LGPL-2.1-or-later"

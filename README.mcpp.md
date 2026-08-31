@@ -5,9 +5,9 @@ this fork adds under `mcpp/`.
 
 ```toml
 [dependencies]
-gnome.gobject = "2.82.5.1"   # GType, signals, properties, GValue
-gnome.gio     = "2.82.5.1"   # files, streams, sockets, D-Bus, GListModel
-gnome.gmodule = "2.82.5.1"   # dynamic module loading
+gnome.gobject = "2.82.5"   # GType, signals, properties, GValue
+gnome.gio     = "2.82.5"   # files, streams, sockets, D-Bus, GListModel
+gnome.gmodule = "2.82.5"   # dynamic module loading
 # gnome.glib arrives transitively — do NOT name it; see below
 ```
 
@@ -21,15 +21,20 @@ gnome.gmodule = "2.82.5.1"   # dynamic module loading
 
 ## Versions
 
-`2.82.5.1` is **upstream 2.82.5, fork revision 1**. The fourth component moves
-when this fork changes and upstream does not.
+**The package version is upstream's, with nothing appended.** `2.82.5` means
+GLib 2.82.5. When this fork changes and upstream does not, the tag is re-cut in
+place and the index descriptor gets a new `sha256`; there is no fork-revision
+component to read.
 
-Revision 1 adds `gnome.gio` and corrects a defect in `gnome.gobject 2.82.5`:
-four generated macros were named `G_UNICODE_TYPE_TYPE`, `G_NORMALIZE_TYPE_MODE`
-and so on, where upstream has `G_TYPE_UNICODE_TYPE`, `G_TYPE_NORMALIZE_MODE`.
-Every *function* name was right, so it compiled, linked, and passed a test that
-checked the function and the nick. **2.82.5 is not a usable base for anything
-that names those macros; use 2.82.5.1.**
+That has one consequence worth knowing: the package store keys on
+`(name, version)`, so a machine that already extracted `2.82.5` keeps what it
+extracted. If a fix landed and you do not see it, clear that entry.
+
+⚠️ The first `2.82.5` — the one cut before `gnome.gio` existed — shipped four
+wrong macro names in `gnome.gobject`: `G_UNICODE_TYPE_TYPE` where upstream has
+`G_TYPE_UNICODE_TYPE`, and three like it. Every *function* name was right, so it
+compiled, linked, and passed a test that checked the function and the nick.
+Fixed in the current `2.82.5`.
 
 ## Why a fork
 

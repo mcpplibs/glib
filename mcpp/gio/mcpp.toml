@@ -59,7 +59,7 @@
 [package]
 namespace   = "gnome"
 name        = "gio"
-version     = "2.82.5.1"
+version     = "2.82.5"
 standard    = "c++23"
 description = "GIO 2.82.5 — files, streams, sockets, D-Bus and application plumbing; the GListModel pango needs"
 license     = "LGPL-2.1-or-later"
