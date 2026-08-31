@@ -1,0 +1,40 @@
+// gnome.gio — files, streams, sockets, D-Bus.
+//
+// Generates the four shared outputs plus gio-visibility.h, gnetworking.h and
+// the gioenumtypes pair. See
+// ../common/generators.h for why each member generates its own copy.
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+import mcpp;
+
+#include "../common/generators.h"
+#include "../common/prelude.h"
+
+int main()
+{
+    if (std::string(mcpp::target_os()) != "linux") {
+        note("this package builds gio for Linux only: the generated glibconfig.h\n"
+             "fixes G_OS_UNIX, the POSIX thread implementation and the POLL\n"
+             "constants, none of which is right anywhere else.\n");
+        return 1;
+    }
+    mcpp_glib_common_setup();
+    // gio's own. gioenumtypes scans 81 enums across gio's public headers —
+    // twenty times glib's four — and it is the annotations rather than the
+    // count that made the generator grow: nick=, prefix=, flags, and the 143
+    // GTK-DOC private/public/protected that must be IGNORED.
+    gen_visibility("GIO", g_inc / "gio" / "gio-visibility.h");
+    gen_gnetworking();
+    gen_gio_enumtypes();
+    gen_flat_forwarders();
+    mcpp::rerun_if_changed("build.mcpp");
+    return 0;
+}

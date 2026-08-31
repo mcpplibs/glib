@@ -1,2 +1,2 @@
 [workspace]
-members = ["mcpp/glib", "mcpp/gobject", "mcpp/gmodule"]
+members = ["mcpp/glib", "mcpp/gobject", "mcpp/gmodule", "mcpp/gio"]

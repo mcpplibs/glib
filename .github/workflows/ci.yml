@@ -77,8 +77,9 @@ jobs:
       - name: gmodule
         run: cd mcpp/gmodule && mcpp test
 
-      # Not "did it build" — what the generators actually wrote. Each of these
-      # would compile and link if it were wrong.
+      - name: gio
+        run: cd mcpp/gio && mcpp test
+
       # Not "did it build" — what the generators actually wrote. Each of these
       # would compile and link if it were wrong.
       #
@@ -89,7 +90,7 @@ jobs:
       - name: the generated headers say what they should
         run: |
           cd mcpp
-          for m in glib gobject gmodule; do
+          for m in glib gobject gmodule gio; do
             echo "--- $m/include ---"
             find "$m/include" -type f | sort
 
@@ -141,38 +142,133 @@ jobs:
           grep -q 'G_MODULE_IMPL_DL' gmodule/include/gmoduleconf.h \
             || { echo "::error::gmoduleconf.h did not select the dl loader"; exit 1; }
 
-          echo "all generated headers check out, in all three trees"
+          # ── gio: the same generator, twenty times the input ───────────────
+          # 82 GTypes, and the count is asserted for the same reason gobject's
+          # 4 is: mkenums drops silently, and a missing GType surfaces in a
+          # consumer rather than here.
+          g=$(grep -c '_get_type (void)' gio/include/gio/gioenumtypes.h)
+          echo "gio enum types: $g"
+          [ "$g" -eq 82 ] || { echo "::error::$g gio enum types, expected 82"; exit 1; }
 
-      # A consumer naming BOTH gobject and gmodule is the case that caught the
+          # ⭐ THE MACRO NAME, checked separately from the function name.
+          # gnome.gobject 2.82.5 shipped `G_UNICODE_TYPE_TYPE` where upstream
+          # has `G_TYPE_UNICODE_TYPE`: mkenums builds @ENUMPREFIX@ from the TYPE
+          # name, not from the enumerator prefix. Every FUNCTION name was right,
+          # so it compiled, linked, and passed a test that checked the function
+          # and the nick. Only the macro was wrong, so only the macro finds it.
+          grep -qx '#define G_TYPE_FILE_TYPE (g_file_type_get_type ())' \
+            gio/include/gio/gioenumtypes.h \
+            || { echo "::error::gioenumtypes.h macro names are not upstream's"; exit 1; }
+
+          # ENUM vs FLAGS is decided ONLY by a `/*< flags >*/` comment, and gio
+          # has exactly seven. Guessing from the name would make GConverterFlags
+          # a flags type; upstream's ABI says it is an enum.
+          f=$(grep -c 'g_flags_register_static' gio/include/gio/gioenumtypes.c)
+          [ "$f" -eq 7 ] || { echo "::error::$f flags types, expected 7"; exit 1; }
+          grep -q 'g_enum_register_static (g_intern_static_string ("GConverterFlags")' \
+            gio/include/gio/gioenumtypes.c \
+            || { echo "::error::GConverterFlags has no /*< flags >*/ and must be an ENUM"; exit 1; }
+
+          # The seventeen nick overrides. Derived, this one would be "no-flags".
+          grep -q '"G_CONVERTER_NO_FLAGS", "none"' gio/include/gio/gioenumtypes.c \
+            || { echo "::error::the /*< nick=… >*/ overrides were not applied"; exit 1; }
+
+          # gio includes its generated headers BOTH ways — 48 times as
+          # "gioenumtypes.h" and 3 as <gio/gioenumtypes.h>. The flat forwarder
+          # answers the first spelling.
+          grep -q '#include <gio/gioenumtypes.h>' gio/include/gioenumtypes.h \
+            || { echo "::error::the flat gioenumtypes.h forwarder is missing"; exit 1; }
+
+          echo "all generated headers check out, in all four trees"
+
+      # A consumer naming MORE THAN ONE member is the case that caught the
       # cross-package source reference: each alone worked, the pair did not.
-      - name: a consumer naming gobject AND gmodule links
+      # mcpp resolved the members' `../glib` path dependencies to ONE package,
+      # so only one member's include/ was ever written and the other's source
+      # entry matched nothing — no error, just an absent object.
+      #
+      # Three members now, because that is the shape a real consumer has:
+      # pango names gobject and gio, and gio pulls glib and gmodule behind it.
+      - name: a consumer naming gobject, gmodule AND gio links
         run: |
           d=$(mktemp -d); mkdir -p "$d/src"
           cat > "$d/mcpp.toml" <<TOML
           [package]
-          name = "pair"
+          name = "trio"
           version = "0.1.0"
           standard = "c++23"
           [target.'cfg(linux)'.dependencies.gnome]
           gobject = { path = "$PWD/mcpp/gobject" }
           gmodule = { path = "$PWD/mcpp/gmodule" }
-          [targets.pair]
+          gio     = { path = "$PWD/mcpp/gio" }
+          [targets.trio]
           kind = "bin"
           main = "src/main.cpp"
           TOML
           cat > "$d/src/main.cpp" <<'CPP'
           #include <glib-object.h>
           #include <gmodule.h>
+          #include <gio/gio.h>
           #include <gobject/glib-enumtypes.h>
           #include <cstdio>
           int main() {
-              const GType t = g_unicode_script_get_type();
-              std::printf("GUnicodeScript=%lu gmodule=%d\n",
-                          (unsigned long)t, g_module_supported());
-              return (t != 0 && g_module_supported()) ? 0 : 1;
+              // One symbol from each member's OWN generated code — which is
+              // exactly what a shared include/ would have lost.
+              const GType script = g_unicode_script_get_type();   // gobject
+              const GType ftype  = G_TYPE_FILE_TYPE;              // gio
+              const GType lmodel = G_TYPE_LIST_MODEL;             // gio, the pango gate
+              std::printf("GUnicodeScript=%lu GFileType=%lu GListModel=%lu gmodule=%d\n",
+                          (unsigned long)script, (unsigned long)ftype,
+                          (unsigned long)lmodel, g_module_supported());
+              return (script != 0 && ftype != 0 && G_TYPE_IS_INTERFACE(lmodel)
+                      && g_module_supported()) ? 0 : 1;
           }
           CPP
           cd "$d" && mcpp run
+
+  # ⭐ THE ONLY CHECKED-IN GENERATED CODE IN THIS FORK, AND THE ONLY ONE THAT
+  # NEEDS A JOB OF ITS OWN.
+  #
+  # Five of gio's six generators are C++ in build.mcpp, so they cannot go stale:
+  # they run on every build. The sixth is gdbus-codegen, 8,351 lines of Python,
+  # and its 15,392 lines of output are committed. Committed output has exactly
+  # one failure mode a build never sees — it can stop matching its input. Nobody
+  # notices, because it still compiles.
+  #
+  # So: regenerate and require a byte-identical tree. That also pins the claim
+  # the whole arrangement rests on — that the output is a PURE FUNCTION of the
+  # XML and the codegen version, with no host, target or locale in it.
+  codegen:
+    runs-on: ubuntu-latest
+    name: mcpp/generated/ still matches the XML it came from
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: regenerate and diff
+        run: |
+          mcpp/tools/gengdbus.sh python3
+          if ! git diff --exit-code --stat -- mcpp/generated; then
+            echo "::error::mcpp/generated/ is not what gdbus-codegen produces from upstream's XML. Run mcpp/tools/gengdbus.sh and commit the result."
+            git diff -- mcpp/generated | head -60
+            exit 1
+          fi
+          echo "mcpp/generated/ reproduces exactly"
+
+      # The script copies the codegen package out of the tree precisely so this
+      # holds; without that, config.py and __pycache__/ would both land in
+      # upstream/ and the job below would fail on a clean checkout.
+      - name: and upstream/ was only read
+        run: |
+          if ! git diff --exit-code --stat -- upstream; then
+            echo "::error::gengdbus.sh modified upstream/"; exit 1
+          fi
+          leaked=$(find upstream -name '__pycache__' -o -name 'config.py')
+          [ -z "$leaked" ] || { echo "::error::left behind in upstream/: $leaked"; exit 1; }
+          echo "upstream/ untouched"
 
   upstream:
     runs-on: ubuntu-latest

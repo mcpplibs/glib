@@ -58,7 +58,7 @@
 [package]
 namespace   = "gnome"
 name        = "glib"
-version     = "2.82.5"
+version     = "2.82.5.1"
 standard    = "c++23"
 description = "GLib 2.82.5 — data structures, the main loop, Unicode and GVariant, with every meson generator reimplemented in build.mcpp"
 license     = "LGPL-2.1-or-later"

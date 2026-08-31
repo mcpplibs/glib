@@ -150,6 +150,25 @@ int main()
               && g_normalize_mode_get_type() != 0,
           "all four generated enum types register");
 
+    // ⚠️ THE MACRO, NOT THE FUNCTION. mkenums emits both, and they come from
+    // DIFFERENT derivations: the function name from the type name in snake
+    // case, the macro from `@ENUMPREFIX@_TYPE_@ENUMSHORT@`. An earlier version
+    // of this generator computed the macro prefix from the ENUMERATORS instead
+    // of the type name and shipped
+    //
+    //     G_UNICODE_TYPE_TYPE          instead of  G_TYPE_UNICODE_TYPE
+    //     G_NORMALIZE_TYPE_MODE        instead of  G_TYPE_NORMALIZE_MODE
+    //
+    // Every function was right, so it compiled, linked, and passed the check
+    // above. The macro is the only thing a consumer writes, and it was the
+    // only thing wrong. Naming it here is what makes that a test failure.
+    check(G_TYPE_UNICODE_TYPE == g_unicode_type_get_type(),
+          "G_TYPE_UNICODE_TYPE is spelled the way upstream spells it");
+    check(G_TYPE_UNICODE_SCRIPT == g_unicode_script_get_type()
+              && G_TYPE_UNICODE_BREAK_TYPE == g_unicode_break_type_get_type()
+              && G_TYPE_NORMALIZE_MODE == g_normalize_mode_get_type(),
+          "…and so are the other three");
+
     // ── 3. a derived type, its property, its signal ──────────────────────
     const GType thing = test_thing_get_type();
     check(thing != 0 && g_type_is_a(thing, G_TYPE_OBJECT),

@@ -24,7 +24,7 @@
 [package]
 namespace   = "gnome"
 name        = "gobject"
-version     = "2.82.5"
+version     = "2.82.5.1"
 standard    = "c++23"
 description = "GObject 2.82.5 — the GLib type system: GType, signals, properties, closures and GValue"
 license     = "LGPL-2.1-or-later"

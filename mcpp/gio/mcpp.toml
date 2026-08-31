@@ -1,0 +1,191 @@
+# gio — files, streams, sockets, D-Bus, application plumbing.
+#
+# The fourth of the four libraries GLib's one source tree produces, and the
+# gate on pango: `PangoFontMap` implements `GListModel`, which lives here.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# ⭐ WHY THIS EXISTS AFTER ALL — AND WHY THE FIRST ANSWER WAS WRONG
+#
+# gio was left out once, with the reason "gdbus-codegen is 8,351 lines of
+# Python and reproducing it in build.mcpp is not proportionate". That
+# conflated two different things:
+#
+#     reproducing the generator     ≠     obtaining its output
+#
+# The build does not need the generator. It needs 15,392 lines of C that are a
+# PURE FUNCTION of five XML files and the codegen version — no target, no host,
+# no locale enters it. So `mcpp/tools/gengdbus.sh` produces them once, they are
+# checked into `mcpp/generated/`, and CI regenerates and diffs.
+#
+# That is exactly the arrangement `freedesktop.wayland-protocols-*` uses for
+# its 195 generated files, and this index had already argued it was FORCED
+# there (a package whose product is headers cannot generate at build time).
+# Here it is not even forced — the output is gio-internal — it is simply the
+# cheap way to get code a rewrite would otherwise have to produce.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# THE OTHER THREE GENERATORS ARE C++, AS EVERYWHERE ELSE IN THIS FORK
+#
+#     gio-visibility.h     gen_visibility("GIO", …)
+#     gioenumtypes.{h,c}   gen_enumtypes over 82 enums — see below
+#     gnetworking.h        one substitution
+#
+# `gconstructor_as_data.h` is upstream's sixth and is NOT here: it embeds
+# glib/gconstructor.h as a C string for `glib-compile-resources`, a TOOL. This
+# package builds no tools, for the reason every package in this index does not:
+# they provide `main`, which collides with the consumer's.
+#
+# ⚠️ 82 ENUMS AGAINST glib's FOUR, and the annotations are why that is not just
+# a bigger loop. gio uses `/*< flags >*/` seven times, `/*< nick=… >*/`
+# seventeen, and `/*< prefix=… >*/` once — and it uses `/*< private >*/`,
+# `/*< public >*/` and `/*< protected >*/` 144 times, which are GTK-DOC
+# annotations for STRUCT MEMBERS and mean nothing to mkenums. A scanner that
+# read every `/*< … >*/` would silently drop enumerators. The nick matters
+# because it is public API: `g_flags_get_value_by_nick` reads it, and
+# `G_CONVERTER_NO_FLAGS` derives "no-flags" while upstream says "none".
+#
+# ─────────────────────────────────────────────────────────────────────────
+# gio's EXTERNAL DEPENDENCIES ARE NONE
+#
+# Upstream's meson names exactly one, `libelf`, and it is used by
+# `gresource-tool.c` — an `executable()`, not the library. Measured: no library
+# source mentions elf at all. There is therefore no libelf feature, because
+# there is nothing for it to switch.
+#
+# `libmount`, `selinux` and `sysprof` are `auto` and absent here; each is
+# `#ifdef`-tested, so each is ABSENT rather than 0, and gio degrades the way
+# upstream intends — GUnixMountMonitor falls back to reading
+# /proc/self/mountinfo, and the SELinux and tracing attributes are not offered.
+[package]
+namespace   = "gnome"
+name        = "gio"
+version     = "2.82.5.1"
+standard    = "c++23"
+description = "GIO 2.82.5 — files, streams, sockets, D-Bus and application plumbing; the GListModel pango needs"
+license     = "LGPL-2.1-or-later"
+repo        = "https://gitlab.gnome.org/GNOME/glib"
+
+[build]
+# The Unix build of gio: everything in gio/ except the Windows implementations,
+# the tools, and the Android-only backend.
+#
+# Globbed with exclusions rather than listed, because upstream's own list is
+# eight `+=` groups across 300 lines of meson and reproducing it by hand would
+# be a transcription error waiting to happen. Every exclusion below is a file
+# that would CONFLICT — an alternative implementation, or a second `main` —
+# rather than one that is merely unused.
+sources = [
+    "../../upstream/gio/*.c",
+
+    # ── the Windows half. gunix*.c and gwin32*.c are ALTERNATIVES, not
+    #    companions: both define the volume monitor, the app-info backend and
+    #    the settings backend. Note `giowin32-private.c` and
+    #    `gmemorymonitorwin32.c` do NOT match `gwin32*` — a pattern that looked
+    #    complete and was not.
+    "!../../upstream/gio/gwin32*.c",
+    "!../../upstream/gio/giowin32-private.c",
+    "!../../upstream/gio/gmemorymonitorwin32.c",
+    "!../../upstream/gio/gregistrysettingsbackend.c",
+    "!../../upstream/gio/gcontenttype-win32.c",
+
+    # ── the macOS half. Only ONE entry, because upstream's other four Cocoa
+    #    backends are Objective-C (`gosxappinfo.m`, `gcontenttype-osx.m`,
+    #    `gnextstepsettingsbackend.m`, `gcocoanotificationbackend.m`) and never
+    #    matched `*.c` to begin with. Excluding them by their `.c` spelling
+    #    would have been four entries that quietly matched nothing.
+    "!../../upstream/gio/gosxnetworkmonitor.c",
+
+    # ── the tools. Each has `main`, and a dependency that provides one
+    #    collides with the consumer's — measured in this index more than once.
+    "!../../upstream/gio/gapplication-tool.c",
+    "!../../upstream/gio/gdbus-tool.c",
+    "!../../upstream/gio/gio-launch-desktop.c",
+    "!../../upstream/gio/gio-querymodules.c",
+    "!../../upstream/gio/gio-tool.c",
+    "!../../upstream/gio/gio-tool-*.c",
+    "!../../upstream/gio/glib-compile-resources.c",
+    "!../../upstream/gio/glib-compile-schemas.c",
+    "!../../upstream/gio/gresource-tool.c",
+    "!../../upstream/gio/gsettings-tool.c",
+
+    # ── xdgmime: the freedesktop shared-mime-info reader behind
+    #    g_content_type_*. Upstream builds it as a separate static_library and
+    #    links it in; here it is simply part of the same object set.
+    "../../upstream/gio/xdgmime/*.c",
+
+    # ── inotify: GLocalFileMonitor's Linux backend. Upstream gates it on
+    #    HAVE_SYS_INOTIFY_H && inotify_init1, both of which config.h asserts.
+    "../../upstream/gio/inotify/*.c",
+
+    # ── gvdb: the key-value file format GSettings schemas and GResource
+    #    bundles are stored in, vendored by upstream under subprojects/ and
+    #    shipped in the release tarball. Only the READER is here —
+    #    gvdb-builder.c is used by glib-compile-schemas and
+    #    glib-compile-resources, both of which are tools and both excluded.
+    "../../upstream/subprojects/gvdb/gvdb/gvdb-reader.c",
+
+    # ── generated. gdbus-codegen's output is checked in (see the header);
+    #    gioenumtypes.c is written by this member's build.mcpp.
+    "../../mcpp/generated/xdp-dbus.c",
+    "../../mcpp/generated/gdbus-daemon-generated.c",
+    "include/gio/gioenumtypes.c",
+]
+
+include_dirs = [
+    # FIRST — see mcpp/common/generators.h for why the ordering is load-bearing.
+    "include",
+    "../generated",
+    "../../upstream/subprojects/gvdb",
+    "../../upstream",
+    "../../upstream/glib",
+    "../../upstream/gio",
+    "../../upstream/gmodule",
+]
+
+cflags = [
+    "-DGIO_COMPILATION",
+    '-DG_LOG_DOMAIN=\"GLib-GIO\"',
+    "-DHAVE_CONFIG_H",
+    "-D_GNU_SOURCE",
+    "-D_POSIX_C_SOURCE=200809L",
+    # Where gio looks for extension modules at run time. Nothing installs any
+    # here, so the lookup finds nothing and every extension point falls back to
+    # its built-in implementation — which is upstream's own behaviour on a
+    # system with no modules installed.
+    '-DGIO_MODULE_DIR=\"/usr/lib/gio/modules\"',
+    '-DGIO_LAUNCH_DESKTOP=\"/usr/libexec/gio-launch-desktop\"',
+
+    # ⚠️ NOT optional, and not merely hygiene. xdgmime's header macro-renames
+    # every `xdg_mime_*` symbol to `_gio_xdg_mime_*`; gcontenttype.c includes
+    # that header and calls the unprefixed spelling. Both sides must see the
+    # same value or the calls and the definitions are different symbols — and
+    # without it gio would also export a public `xdg_mime_*` surface that
+    # collides with any consumer linking the real libxdgmime.
+    "-DXDG_PREFIX=_gio_xdg",
+
+    # The `/var` half of D-Bus' machine-id lookup. gdbusprivate.c pastes it
+    # onto "/lib/dbus/machine-id" and falls back to the hard-coded
+    # /etc/machine-id, so this is a first choice rather than a requirement —
+    # but it is a bare `LOCALSTATEDIR "/lib/..."` concatenation, so leaving it
+    # undefined is a compile error, not a default.
+    '-DLOCALSTATEDIR=\"/var\"',
+    "-Wno-unused-parameter",
+    "-Wno-missing-field-initializers",
+    "-Wno-declaration-after-statement",
+    "-fPIC",
+]
+
+# `-lresolv` for gthreadedresolver.c's DNS record lookups (res_nquery and
+# friends). zlib is NOT here: it arrives as a package, below.
+ldflags = ["-lm", "-pthread", "-lresolv"]
+
+[targets.gio-2_0]
+kind = "lib"
+
+[dependencies]
+gnome.glib    = { path = "../glib" }
+gnome.gobject = { path = "../gobject" }
+gnome.gmodule = { path = "../gmodule" }
+
+# GZlibCompressor and GZlibDecompressor are part of gio's public API.
+compat.zlib = "1.3.2"
