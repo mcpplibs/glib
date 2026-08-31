@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -16,6 +17,7 @@ import mcpp;
 
 #include "../common/generators.h"
 #include "../common/prelude.h"
+#include "../common/modules.h"
 
 int main()
 {
@@ -26,6 +28,24 @@ int main()
         return 1;
     }
     mcpp_glib_common_setup();
+    // The module wrapper. glib's umbrella names 73 headers.
+    // ⚠️ glibconfig.h IS ADDED BY HAND, and it has to be. It is spelled
+    // `#include <glibconfig.h>` — no `glib/` prefix — so deriving the header
+    // set from the umbrella's `<glib/…>` lines cannot see it. It is also where
+    // `gsize`, `gssize` and `goffset` are TYPEDEF'd, so without it the module
+    // is missing the width types every other glib declaration is written in,
+    // and the first consumer to name one fails with `'gsize' was not declared`.
+    std::vector<fs::path> glib_headers =
+        headers_from_umbrella(g_up / "glib" / "glib.h", "glib",
+                              {g_up / "glib", g_inc / "glib"});
+    glib_headers.push_back(g_inc / "glibconfig.h");
+
+    gen_module("gnome.glib", "glib.h", glib_headers,
+               g_root / "src" / "glib.cppm",
+               g_inc / "glib" / "glib-macros.h",
+               "glib/glib-macros.h",
+               /*min_exports=*/900);
+
     mcpp::rerun_if_changed("build.mcpp");
     return 0;
 }

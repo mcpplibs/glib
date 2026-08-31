@@ -71,6 +71,7 @@ repo        = "https://gitlab.gnome.org/GNOME/glib"
 # `giowin32.c`) and `dirent/`, which are alternatives to these rather than
 # companions — a glob would take both and the link would have two definitions.
 sources = [
+    "src/glib.cppm",
     "../../upstream/glib/garcbox.c",
     "../../upstream/glib/garray.c",
     "../../upstream/glib/gasyncqueue.c",
@@ -215,6 +216,9 @@ cflags = [
 # `-lm` for the maths in gtimer/grand; `-pthread` for GThread's POSIX
 # implementation, which is what THREADS_POSIX in the generated config.h selects.
 ldflags = ["-lm", "-pthread"]
+
+[lib]
+path = "src/glib.cppm"
 
 [targets.glib-2_0]
 kind = "lib"

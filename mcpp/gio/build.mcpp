@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -17,6 +18,7 @@ import mcpp;
 
 #include "../common/generators.h"
 #include "../common/prelude.h"
+#include "../common/modules.h"
 
 int main()
 {
@@ -35,6 +37,18 @@ int main()
     gen_gnetworking();
     gen_gio_enumtypes();
     gen_flat_forwarders();
+    // The module wrapper. gio.h names 152 headers, and the module re-exports
+    // all three siblings because gio.h reaches all three.
+    gen_module("gnome.gio", "gio/gio.h",
+               headers_from_umbrella(g_up / "gio" / "gio.h", "gio",
+                                     {g_up / "gio", g_inc / "gio"}),
+               g_root / "src" / "gio.cppm",
+               g_inc / "gio" / "gio-macros.h",
+               "gio/gio-macros.h",
+               /*min_exports=*/1200,
+               /*reexports=*/{"gnome.glib", "gnome.gobject", "gnome.gmodule"},
+               /*macro_includes=*/{"glib/glib-macros.h", "gobject/gobject-macros.h"});
+
     mcpp::rerun_if_changed("build.mcpp");
     return 0;
 }

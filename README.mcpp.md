@@ -11,13 +11,66 @@ gnome.gmodule = "2.82.5"   # dynamic module loading
 # gnome.glib arrives transitively — do NOT name it; see below
 ```
 
+| module | exports |
+|---|---|
+| `gnome.glib` | 2,732 |
+| `gnome.gobject` | 495 · re-exports `gnome.glib` |
+| `gnome.gmodule` | 20 · re-exports `gnome.glib` |
+| `gnome.gio` | 2,850 · re-exports all three |
+
+The re-exports are not a convenience: glib is a workspace **path** dependency,
+so a consumer that also named it would get `requested as both a version dep and
+a path dep`. `import gnome.gio;` has to be as complete as `#include <gio/gio.h>`,
+and it is.
+
+Two ways to consume it, and **you pick one**:
+
 ```cpp
+// ── the module route ──────────────────────────────────────────────────
+import gnome.gio;        // re-exports gnome.glib, gnome.gobject, gnome.gmodule
+GFile *f = g_file_new_for_path("/etc/hostname");
+```
+
+```cpp
+// ── the header route ──────────────────────────────────────────────────
 // No extern "C": glib decorates its own headers with G_BEGIN_DECLS, and
 // wrapping them breaks under libc++ (glib.h pulls <stdlib.h>, which libc++
 // routes through <cstdlib> — templates inside an extern "C" block).
-#include <glib-object.h>
 #include <gio/gio.h>
+GFile *f = g_file_new_for_path("/etc/hostname");
+GListStore *s = g_list_store_new(G_TYPE_FILE);   // a MACRO — header route only
 ```
+
+## ⚠️ The two routes do not compose
+
+A TU that imports the module **and** textually includes a glib header reaches
+`<time.h>` twice — once through the module's global fragment, once directly —
+and the same `struct tm` from the same file becomes two entities:
+
+```
+error: conflicting declaration 'struct tm'
+note: previous declaration as 'struct tm'   (of module gnome.glib)
+```
+
+**Which route to pick is decided by macros.** A module cannot carry them, and
+glib's are half its API:
+
+| | declarations | `#define` |
+|---|---|---|
+| glib | 1,312 | 1,337 |
+| gobject | 243 | 339 |
+| gio | 1,753 | 1,679 |
+
+`G_DEFINE_TYPE`, `G_OBJECT`, `g_signal_connect`, every `G_TYPE_*` — macros. So
+code that defines a GObject subclass takes the **header** route. Code that uses
+the function API — most of gio — takes the **module** route and includes
+nothing. Each member ships a test for each route, so both stay working.
+
+Why a module at all, when the headers work: **in this index the namespace is a
+contract.** `compat.xxx` means headers; an owner namespace like `gnome.xxx`
+means the package exposes `import`, the way `freedesktop.cairo`,
+`wlroots.wlroots` and `freedesktop.wayland` do. `gnome.*` promised it and did
+not deliver, which is a wrong promise rather than a missing nicety.
 
 ## Versions
 
@@ -39,7 +92,8 @@ Fixed in the current `2.82.5`.
 ## Why a fork
 
 **Generators, not line count** — the same criterion that made cairo (104k
-lines) a plain descriptor and libdisplay-info (2k) a fork. GLib has six:
+lines) a plain descriptor and libdisplay-info (2k) a fork. GLib has seven,
+and this fork adds an eighth of its own:
 
 | upstream | here |
 |---|---|
@@ -51,6 +105,7 @@ lines) a plain descriptor and libdisplay-info (2k) a fork. GLib has six:
 | `configure_file` → `config.h` | `gen_config()` |
 | `gobject/glib-mkenums` (816 lines of Python) | `write_enumtypes()` |
 | `gio/gdbus-2.0/codegen` (8,351 lines of Python) | **checked in** — see below |
+| *(none — this fork's own)* | `gen_module()` → the four `.cppm` wrappers |
 
 **There is no `sh` and no `python` in the build.** `build.mcpp` is a compiled
 C++ program, so every generator above except the last is a function in it.
@@ -102,6 +157,29 @@ gives `G_UNICODE_TYPE_TYPE` instead of `G_TYPE_UNICODE_TYPE` — which compiles,
 links, and passes any test that checks the function or the nick. CI now checks
 the macro, the nick, and enum-vs-flags separately, because they fail
 independently.
+
+## ⭐ Four ways the module generator missed names *silently*
+
+Every one of these produced a wrapper that **compiled**, and every one was
+found by a consumer or by the other toolchain — never by the build:
+
+| | what happened |
+|---|---|
+| `= '{'` | `G_VARIANT_CLASS_DICT_ENTRY = '{'` is a brace in a **char literal**. The typedef reader counted it, never closed, and swallowed the rest of `gvariant.h` — every `g_variant_*` function gone, while 1,853 other names made the module look complete. |
+| `G_DECLARE_INTERFACE` | expands to the typedef *and* `_get_type`, so a text scanner sees neither. `GListModel`, `GListStore` and `g_list_model_get_type` were missing — the exact symbols pango is waiting on. |
+| `<glibconfig.h>` | spelled with no `glib/` prefix, so deriving the header set from the umbrella's `<glib/…>` lines missed it — and it is where `gsize` and `gssize` are `typedef`'d. |
+| `void (g_free) (…)` | glib parenthesises names to defend them from macros, putting the declarator at paren depth 1. A depth-0 rule dropped `g_free`, `g_string_free` and the GVariant constructors. |
+
+And one that only **one toolchain** could show:
+
+> `typedef enum { G_MODULE_BIND_LAZY, … } GModuleFlags;` — exporting the typedef
+> makes the enumerators visible **on GCC**. Clang rejects the same file with
+> `use of undeclared identifier 'G_MODULE_BIND_LAZY'`. Enumerators are now
+> exported by name. This is the single best argument in this fork for CI running
+> both toolchains.
+
+The floors in CI (`glib ≥ 1900`, `gio ≥ 2400`) exist for exactly this: a
+collapse is silent, so something has to count.
 
 ## Four build programs, one set of generators
 

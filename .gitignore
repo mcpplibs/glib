@@ -14,3 +14,14 @@ mcpp.lock
 # fork that commits its tree gets them applied — the cairo fork lost five
 # release files that way before its "upstream is the tarball" check caught it.
 !upstream/**
+
+# The module wrappers, written by each member's build.mcpp from upstream's
+# public headers — 6,097 `using ::` lines across the four. Generated for the
+# same reason the headers are: a version bump regenerates them, so a name
+# upstream added or removed cannot be silently missed.
+#
+# `src/.gitkeep` is committed for the same reason `include/.gitkeep` is: mcpp
+# reads the manifest before running the build program, and an entry naming a
+# path that is not there is dropped WITHOUT AN ERROR.
+mcpp/*/src/*.cppm
+!mcpp/*/src/.gitkeep

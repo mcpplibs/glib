@@ -75,6 +75,7 @@ repo        = "https://gitlab.gnome.org/GNOME/glib"
 # that would CONFLICT — an alternative implementation, or a second `main` —
 # rather than one that is merely unused.
 sources = [
+    "src/gio.cppm",
     "../../upstream/gio/*.c",
 
     # ── the Windows half. gunix*.c and gwin32*.c are ALTERNATIVES, not
@@ -178,6 +179,9 @@ cflags = [
 # `-lresolv` for gthreadedresolver.c's DNS record lookups (res_nquery and
 # friends). zlib is NOT here: it arrives as a package, below.
 ldflags = ["-lm", "-pthread", "-lresolv"]
+
+[lib]
+path = "src/gio.cppm"
 
 [targets.gio-2_0]
 kind = "lib"

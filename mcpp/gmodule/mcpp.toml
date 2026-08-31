@@ -21,6 +21,7 @@ repo        = "https://gitlab.gnome.org/GNOME/glib"
 
 [build]
 sources = [
+    "src/gmodule.cppm",
     "../../upstream/gmodule/gmodule.c",
     "../../upstream/gmodule/gmodule-deprecated.c",
 ]
@@ -52,6 +53,9 @@ cflags = [
 # and the flag is a no-op, but it is not on the glibc versions this index still
 # targets, and an unnecessary -ldl costs nothing.
 ldflags = ["-ldl", "-pthread"]
+
+[lib]
+path = "src/gmodule.cppm"
 
 [targets.gmodule-2_0]
 kind = "lib"

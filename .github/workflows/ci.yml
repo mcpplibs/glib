@@ -179,6 +179,46 @@ jobs:
           grep -q '#include <gio/gioenumtypes.h>' gio/include/gioenumtypes.h \
             || { echo "::error::the flat gioenumtypes.h forwarder is missing"; exit 1; }
 
+          # ── the MODULE wrappers ───────────────────────────────────────────
+          # The namespace is a contract in this index: `compat.xxx` means
+          # headers, an owner namespace like `gnome.xxx` means `import`. These
+          # counts are floors rather than equalities — upstream adds API — but
+          # a COLLAPSE is what they are for, and every collapse this generator
+          # had was silent:
+          #
+          #   a brace inside a char literal (`= '{'` in GVariantClass) left the
+          #     typedef reader unbalanced and it swallowed the rest of the file
+          #   G_DECLARE_INTERFACE/FINAL_TYPE expand to the typedef and
+          #     `_get_type`, so a text scanner sees neither — GListModel,
+          #     GListStore and g_list_model_get_type all went missing
+          #   glibconfig.h is spelled without a `glib/` prefix, so deriving the
+          #     header set from the umbrella missed gsize and gssize
+          #
+          # In every case the module still COMPILED. Only a consumer noticed.
+          for m in glib:1900 gobject:400 gmodule:12 gio:2400; do
+            name=${m%%:*}; floor=${m##*:}
+            n=$(grep -c '^using ::' "$name/src/$name.cppm")
+            echo "$name module exports: $n (floor $floor)"
+            [ "$n" -ge "$floor" ] || { echo "::error::$name exports only $n names; the scan collapsed"; exit 1; }
+          done
+
+          # The three names pango is waiting on, by name.
+          grep -qx 'using ::g_list_model_get_type;' gio/src/gio.cppm \
+            || { echo "::error::gio's module is missing g_list_model_get_type"; exit 1; }
+          grep -qx 'using ::GListStore;' gio/src/gio.cppm \
+            || { echo "::error::gio's module is missing GListStore"; exit 1; }
+
+          # An ENUMERATOR, which is the check that needed two toolchains: GCC
+          # makes them visible through an exported typedef and clang does not.
+          grep -qx 'using ::G_UNICODE_OTHER_LETTER;' glib/src/glib.cppm \
+            || { echo "::error::enumerators are not exported; clang will reject consumers"; exit 1; }
+
+          # And the re-export chain, which is not optional: glib is a workspace
+          # PATH dependency, so a consumer cannot name it and MUST receive it
+          # through whichever member it does name.
+          grep -qx 'export import gnome.glib;' gio/src/gio.cppm \
+            || { echo "::error::gio's module does not re-export gnome.glib"; exit 1; }
+
           echo "all generated headers check out, in all four trees"
 
       # A consumer naming MORE THAN ONE member is the case that caught the

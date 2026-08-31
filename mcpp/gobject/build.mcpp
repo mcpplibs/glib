@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -17,6 +18,7 @@ import mcpp;
 
 #include "../common/generators.h"
 #include "../common/prelude.h"
+#include "../common/modules.h"
 
 int main()
 {
@@ -32,6 +34,19 @@ int main()
     // g_enum_register_static is a gobject symbol.
     gen_visibility("GOBJECT", g_inc / "gobject" / "gobject-visibility.h");
     gen_enumtypes();
+    // The module wrapper. It re-exports gnome.glib because glib-object.h
+    // includes glib.h — and because a consumer cannot name gnome.glib itself,
+    // glib being a workspace path dependency.
+    gen_module("gnome.gobject", "glib-object.h",
+               headers_from_umbrella(g_up / "glib" / "glib-object.h", "gobject",
+                                     {g_up / "gobject", g_inc / "gobject"}),
+               g_root / "src" / "gobject.cppm",
+               g_inc / "gobject" / "gobject-macros.h",
+               "gobject/gobject-macros.h",
+               /*min_exports=*/180,
+               /*reexports=*/{"gnome.glib"},
+               /*macro_includes=*/{"glib/glib-macros.h"});
+
     mcpp::rerun_if_changed("build.mcpp");
     return 0;
 }
